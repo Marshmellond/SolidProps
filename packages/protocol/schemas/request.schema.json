@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CadWeave v1 Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "method", "params", "protocolVersion"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "protocolVersion": {"const": 1},
+    "method": {"enum": ["discover", "connect", "snapshot", "apply", "disconnect"]},
+    "params": {"type": "object"}
+  }
+}

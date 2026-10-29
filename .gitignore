@@ -1,0 +1,32 @@
+node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.tsbuildinfo
+out/
+dist/
+artifacts/
+.local/
+# 客户测试资料：任何层级的同名目录均禁止提交
+测试文件/
+# CAD 模型文件兜底排除（防止误复制到源码目录）
+*.[sS][lL][dD][pP][rR][tT]
+*.[sS][lL][dD][aA][sS][mM]
+*.[sS][lL][dD][dD][rR][wW]
+*.[pP][rR][tT]
+*.[pP][rR][tT].*
+*.[aA][sS][mM]
+*.[aA][sS][mM].*
+*.[dD][rR][wW]
+*.[dD][rR][wW].*
+*.[sS][tT][eE][pP]
+*.[sS][tT][pP]
+*.[iI][gG][eE][sS]
+*.[iI][gG][sS]
+*.[xX]_[tTbB]
+.env
+*.log
+playwright-report/
+test-results/

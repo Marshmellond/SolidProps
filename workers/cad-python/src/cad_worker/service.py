@@ -1,0 +1,164 @@
+"""Strict line-delimited protocol v1 dispatcher, sequential and main-thread only."""
+import json
+import sys
+import threading
+from copy import deepcopy
+from .contracts import WorkerError
+from . import discovery
+from .adapters import builtin_plugins
+
+MAX_LINE = 4 * 1024 * 1024
+
+
+def reject_duplicates(pairs):
+    output = {}
+    for key, value in pairs:
+        if key in output:
+            raise WorkerError('INVALID_JSON', f'JSON 包含重复键：{key}')
+        output[key] = value
+    return output
+
+
+def decode(line):
+    try:
+        return json.loads(line, object_pairs_hook=reject_duplicates, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+    except (ValueError, UnicodeError) as exc:
+        raise WorkerError('INVALID_JSON', '请求不是有效 UTF-8 JSON。') from exc
+
+
+def fields(value, required, optional=()):
+    if not isinstance(value, dict) or not set(required) <= value.keys() or value.keys() - set(required) - set(optional):
+        raise WorkerError('INVALID_PARAMS', '请求字段缺失、未知或不是对象。')
+
+
+class Worker:
+    def __init__(self, discover=None, factories=None):
+        self.discover = discover if discover is not None else discovery.discover
+        self.factories = factories if factories is not None else {p.cad_id: p.factory for p in builtin_plugins()}
+        self.adapter = None
+        self.snapshot = None
+        self.thread = threading.get_ident()
+        self.request_ids = set()
+
+    def dispatch(self, request):
+        request_id = request.get('id') if isinstance(request, dict) else None
+        try:
+            if threading.get_ident() != self.thread:
+                raise WorkerError('THREAD_VIOLATION', 'Worker 请求必须在主线程串行处理。')
+            fields(request, ('id', 'method', 'params', 'protocolVersion'))
+            if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
+                raise WorkerError('INVALID_REQUEST', 'id 必须是非空唯一字符串（最多256字符）。')
+            if type(request['protocolVersion']) is not int or request['protocolVersion'] != 1:
+                raise WorkerError('PROTOCOL_VERSION', '仅支持 protocolVersion: 1。')
+            if request_id in self.request_ids:
+                raise WorkerError('DUPLICATE_REQUEST', '请求 ID 已使用，拒绝重放。')
+            if len(self.request_ids) >= 100000:
+                raise WorkerError('REQUEST_LIMIT', '请求数量达到安全上限，请重启 Worker。')
+            self.request_ids.add(request_id)
+            if not isinstance(request['method'], str) or not isinstance(request['params'], dict):
+                raise WorkerError('INVALID_REQUEST', 'method 必须为字符串，params 必须为对象。')
+            answer = self._method(request['method'], request['params'])
+            return dict(id=request_id, result=answer, protocolVersion=1)
+        except WorkerError as exc:
+            return dict(id=request_id, error=dict(code=exc.code, message=str(exc)), protocolVersion=1)
+        except Exception as exc:
+            # COM details belong on stderr; frontend receives a truthful failure.
+            print(f'{type(exc).__name__}: {exc}', file=sys.stderr)
+            return dict(id=request_id, error=dict(code='CAD_API_ERROR', message=f'CAD 接口调用失败，未宣称成功：{exc}'), protocolVersion=1)
+
+    def _method(self, method, params):
+        if method == 'discover':
+            fields(params, ())
+            return self.discover()
+        if method == 'disconnect':
+            fields(params, ())
+            self.close()
+            return dict(disconnected=True)
+        if method == 'connect':
+            fields(params, ('sessionId',))
+            if not isinstance(params['sessionId'], str):
+                raise WorkerError('INVALID_PARAMS', 'sessionId 必须为字符串。')
+            session = next((s for s in self.discover()['sessions'] if s['id'] == params['sessionId']), None)
+            if not session or not session['connectable']:
+                raise WorkerError('SESSION_UNAVAILABLE', '所选会话不存在或不可安全连接。')
+            factory = self.factories.get(session['cadId'])
+            if factory is None:
+                raise WorkerError('UNSUPPORTED_CAD', '当前版本未启用该 CAD 驱动。')
+            self.close()
+            self.adapter = factory(deepcopy(session))
+            return dict(session=deepcopy(self.adapter.session), capabilities=deepcopy(self.adapter.capabilities))
+        if method not in ('snapshot', 'apply'):
+            raise WorkerError('METHOD_NOT_FOUND', '未知协议方法。')
+        if self.adapter is None:
+            raise WorkerError('NOT_CONNECTED', '请先连接会话。')
+        if method == 'snapshot':
+            fields(params, ('scope',))
+            if params['scope'] not in ('document', 'configuration'):
+                raise WorkerError('INVALID_PARAMS', 'scope 必须为 document 或 configuration。')
+            # Invalidate old snapshot BEFORE trying a new one, even if API fails.
+            self.snapshot = None
+            self.snapshot = self.adapter.snapshot(params['scope'])
+            return deepcopy(self.snapshot)
+        fields(params, ('snapshotId', 'changes', 'confirmSave'))
+        if params['confirmSave'] is not True:
+            raise WorkerError('CONFIRM_REQUIRED', '必须明确 confirmSave:true 才能提交。')
+        if not self.snapshot or params['snapshotId'] != self.snapshot['id']:
+            raise WorkerError('STALE_SNAPSHOT', '快照已失效或不属于当前会话，请重新读取。')
+        if self.snapshot['sessionId'] != self.adapter.session['id']:
+            raise WorkerError('SESSION_CHANGED', '快照会话不一致。')
+        changes = params['changes']
+        if not isinstance(changes, list) or not changes or len(changes) > 1000:
+            raise WorkerError('INVALID_PARAMS', 'changes 必须是包含1至1000项的数组。')
+        models = {m['id']: m for m in self.snapshot['models']}
+        seen = set()
+        # Whole-batch checks prevent a later malformed property causing partial writes.
+        for change in changes:
+            fields(change, ('modelId', 'propertyName', 'oldValue', 'newValue'))
+            if not all(isinstance(value, str) for value in change.values()) or any(len(value) > 65536 or '\x00' in value for value in change.values()):
+                raise WorkerError('INVALID_PARAMS', '变更字段必须为字符串且不得包含 NUL 或超过65536字符。')
+            key = (change['modelId'], change['propertyName'])
+            if key in seen:
+                raise WorkerError('DUPLICATE_CHANGE', '同一属性不能重复提交。')
+            seen.add(key)
+            model = models.get(change['modelId'])
+            if not model:
+                raise WorkerError('UNKNOWN_MODEL', '未知模型，不允许跨快照写入。')
+            prop = next((p for p in model['properties'] if p['name'] == change['propertyName']), None)
+            if prop is None:
+                raise WorkerError('UNKNOWN_PROPERTY', '未知属性；v1 不允许新增或删除属性。')
+            if not model['writable'] or not prop['writable'] or model['dirty']:
+                raise WorkerError('READ_ONLY', model['reason'] or prop['reason'] or '模型已脏，禁止保存。')
+            if prop['value'] != change['oldValue']:
+                raise WorkerError('VALUE_CONFLICT', '原值与快照不一致。')
+        self.adapter.validate()
+        # Once mutation may begin, consume snapshot even on exception. A save
+        # failure cannot be retried using the same snapshot or auto-saved later.
+        snapshot, self.snapshot = self.snapshot, None
+        return self.adapter.apply(snapshot, deepcopy(changes))
+
+    def close(self):
+        adapter, self.adapter = self.adapter, None
+        self.snapshot = None
+        if adapter is not None:
+            adapter.close()
+
+
+def serve(input_stream=None, output_stream=None, worker=None):
+    source, target, worker = input_stream or sys.stdin, output_stream or sys.stdout, worker or Worker()
+    try:
+        while True:
+            line = source.readline(MAX_LINE + 1)
+            if not line:
+                break
+            try:
+                if len(line) > MAX_LINE:
+                    while line and not line.endswith('\n'):
+                        line = source.readline(MAX_LINE + 1)
+                    raise WorkerError('REQUEST_TOO_LARGE', '单行请求超过4 MiB安全上限。')
+                response = worker.dispatch(decode(line))
+            except WorkerError as exc:
+                response = dict(id=None, error=dict(code=exc.code, message=str(exc)), protocolVersion=1)
+            target.write(json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n')
+            target.flush()
+    finally:
+        worker.close()

@@ -1,0 +1,26 @@
+appId: com.cadweave.desktop
+productName: CadWeave
+copyright: Copyright © CadWeave
+asar: true
+directories:
+  output: ../../artifacts/desktop
+files:
+  - out/**/*
+  - package.json
+  - resources/icons/*
+extraResources:
+  - from: ../../artifacts/worker/cad-worker
+    to: cad-worker
+win:
+  icon: resources/icons/cadweave.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  signExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: CadWeave
+artifactName: CadWeave-Setup-${version}-${arch}.${ext}
