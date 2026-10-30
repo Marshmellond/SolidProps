@@ -27,7 +27,7 @@ export function EditActions(props: EditActionsProps) {
             onClick={props.onStart}
           >
             <Pencil size={15} />
-            编辑属性
+            编辑
           </button>
         )}
         <button

@@ -133,8 +133,13 @@ export default function App() {
   const [busy, setBusy] = useState(''),
     [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null)
   const [editing, setEditing] = useState(false)
-  const [editingModelId, setEditingModelId] = useState<string | null>(null)
   const [propertyTargetId, setPropertyTargetId] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    modelId: string
+    property: string
+  } | null>(null)
   const [focusedOccurrence, setFocusedOccurrence] = useState<string | null>(null)
   const [savedSignature, setSavedSignature] = useState('[]')
   const [savedAt, setSavedAt] = useState('')
@@ -161,8 +166,7 @@ export default function App() {
     } | null>(null)
   const [batchProp, setBatchProp] = useState(''),
     [batchValue, setBatchValue] = useState('')
-  const [result, setResult] = useState<ApplyResult | null>(null),
-    [logs, setLogs] = useState<Operation[]>([])
+  const [logs, setLogs] = useState<Operation[]>([])
   const [needsRefresh, setNeedsRefresh] = useState(false),
     [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const booted = useRef(false)
@@ -306,7 +310,6 @@ export default function App() {
         setSnap(null)
         setEditing(false)
         setDraft({})
-        setResult(null)
         setNeedsRefresh(false)
         setCollapsed(new Set())
         setSelected(new Set())
@@ -360,7 +363,6 @@ export default function App() {
     const change = draft[keyOf(m.id, prop)]
     return (
       editing &&
-      (!editingModelId || editingModelId === m.id) &&
       !busy &&
       !needsRefresh &&
       change?.operation !== 'delete' &&
@@ -368,6 +370,39 @@ export default function App() {
         ? !!cap?.writable && m.writable && !m.dirty
         : canEdit(m, prop, cap, needsRefresh))
     )
+  }
+  function addMissingProperty(model: Model, name: string) {
+    if (!editing || busy || needsRefresh || !cap?.writable || !model.writable || model.dirty) return
+    setDraft((prev) => ({
+      ...prev,
+      [keyOf(model.id, name)]: {
+        modelId: model.id,
+        propertyName: name,
+        operation: 'add',
+        oldValue: '',
+        newValue: '',
+      },
+    }))
+  }
+  function deleteCellProperty(model: Model, name: string) {
+    if (!editing || busy || needsRefresh || !model.writable || model.dirty || !cap?.writable) return
+    setDraft((prev) => {
+      const next = { ...prev }
+      const key = keyOf(model.id, name)
+      if (next[key]?.operation === 'add') delete next[key]
+      else {
+        const prop = model.properties.find((p) => p.name === name)
+        if (!prop || !prop.writable) return prev
+        next[key] = {
+          modelId: model.id,
+          propertyName: name,
+          operation: 'delete',
+          oldValue: prop.value,
+          newValue: '',
+        }
+      }
+      return next
+    })
   }
   function editValue(m: Model, name: string, value: string) {
     if (!editable(m, name)) return
@@ -405,17 +440,15 @@ export default function App() {
   function startRowEdit(model: Model) {
     if (busy || needsRefresh || !cap?.writable || !model.writable || model.dirty) return
     setEditing(true)
-    setEditingModelId(model.id)
-    setResult(null)
   }
   function openPropertyAction(action: 'add' | 'delete', modelId: string | null) {
+    if (!editing || busy || needsRefresh) return
     if (modelId) {
       const model = snap?.models.find((m) => m.id === modelId)
       if (!model || !model.writable || model.dirty) return
       startRowEdit(model)
     } else {
       setEditing(true)
-      setEditingModelId(null)
     }
     setPropertyTargetId(modelId)
     setPropertyAction(action)
@@ -487,7 +520,6 @@ export default function App() {
           changes,
           confirmSave: true,
         })
-        setResult(outcome)
         const pending = changes.filter(
           (c) =>
             !outcome!.results.some(
@@ -623,17 +655,12 @@ export default function App() {
               </div>
               <div className="title-actions">
                 <EditActions
-                  hideStart
                   editing={editing}
                   canStart={canStartEditing}
                   busy={!!busy}
                   locked={needsRefresh}
                   changeCount={changes.length}
-                  onStart={() => {
-                    setEditing(true)
-                    setEditingModelId(null)
-                    setResult(null)
-                  }}
+                  onStart={() => setEditing(true)}
                   onSave={() => void saveDraft()}
                   saved={draftSaved}
                   canSaveEmpty={!!savedAt}
@@ -782,6 +809,7 @@ export default function App() {
                     <button
                       className="plain-button"
                       disabled={
+                        !editing ||
                         !selectedModels.some((m) => m.writable && !m.dirty) ||
                         !!busy ||
                         needsRefresh ||
@@ -789,7 +817,6 @@ export default function App() {
                       }
                       onClick={() => {
                         setEditing(true)
-                        setEditingModelId(null)
                         setBatchProp(batchColumns[0] ?? columns[0] ?? '')
                         setBatchValue('')
                         setModal('batch')
@@ -801,6 +828,7 @@ export default function App() {
                     <button
                       className="plain-button"
                       disabled={
+                        !editing ||
                         !selectedModels.some((m) => m.writable && !m.dirty) ||
                         !!busy ||
                         needsRefresh ||
@@ -809,11 +837,12 @@ export default function App() {
                       onClick={() => openPropertyAction('add', null)}
                     >
                       <Plus size={15} />
-                      批量新增
+                      新增属性
                     </button>
                     <button
                       className="plain-button"
                       disabled={
+                        !editing ||
                         !selectedModels.some((m) => m.writable && !m.dirty) ||
                         !!busy ||
                         needsRefresh ||
@@ -822,7 +851,7 @@ export default function App() {
                       onClick={() => openPropertyAction('delete', null)}
                     >
                       <Trash2 size={15} />
-                      批量删除
+                      删除属性
                     </button>
                     <button
                       className="plain-button"
@@ -870,7 +899,6 @@ export default function App() {
                               <th key={p}>{p}</th>
                             ))}
                             <th className="state-col">状态</th>
-                            <th className="row-actions-col">操作</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -918,12 +946,21 @@ export default function App() {
                                 return (
                                   <td
                                     key={name}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault()
+                                      setContextMenu({
+                                        x: Math.min(e.clientX, window.innerWidth - 190),
+                                        y: Math.min(e.clientY, window.innerHeight - 220),
+                                        modelId: m.id,
+                                        property: name,
+                                      })
+                                    }}
                                     className={`${c ? 'cell-dirty' : ''} ${!writable ? 'cell-readonly' : ''}`}
                                     title={
                                       c
                                         ? `原值：${p?.value || '（空）'}`
                                         : !editing && canEdit(m, name, cap, needsRefresh)
-                                          ? '点击本行“编辑”后修改'
+                                          ? '点击右上角“编辑”后修改'
                                           : !writable
                                             ? m.reason ||
                                               p?.reason ||
@@ -953,7 +990,28 @@ export default function App() {
                                         onPaste={(e) => pasteRect(e, m, name)}
                                       />
                                     ) : (
-                                      <span className="missing">—</span>
+                                      <button
+                                        className="missing-property"
+                                        title={
+                                          editing && m.writable && !m.dirty
+                                            ? '为此文件新增同名属性，不影响其他文件'
+                                            : '此文件没有该属性'
+                                        }
+                                        disabled={
+                                          !editing ||
+                                          !m.writable ||
+                                          m.dirty ||
+                                          !cap?.writable ||
+                                          !!busy ||
+                                          needsRefresh
+                                        }
+                                        onClick={() => {
+                                          setSelected(new Set([m.id]))
+                                          addMissingProperty(m, name)
+                                        }}
+                                      >
+                                        未设置{editing && m.writable && !m.dirty ? ' +' : ''}
+                                      </button>
                                     )}
                                     {c && <i className="dirty-corner" />}
                                   </td>
@@ -977,54 +1035,6 @@ export default function App() {
                                     <i />
                                     已读取
                                   </span>
-                                )}
-                              </td>
-                              <td className="row-actions-col">
-                                <div className="row-actions">
-                                  <button
-                                    disabled={
-                                      !m.writable ||
-                                      m.dirty ||
-                                      !cap?.writable ||
-                                      !!busy ||
-                                      needsRefresh
-                                    }
-                                    onClick={() => startRowEdit(m)}
-                                  >
-                                    编辑
-                                  </button>
-                                  <button
-                                    disabled={
-                                      !m.writable ||
-                                      m.dirty ||
-                                      !cap?.writable ||
-                                      !!busy ||
-                                      needsRefresh
-                                    }
-                                    onClick={() => openPropertyAction('add', m.id)}
-                                  >
-                                    新增
-                                  </button>
-                                  <button
-                                    disabled={
-                                      !m.writable ||
-                                      m.dirty ||
-                                      !cap?.writable ||
-                                      !!busy ||
-                                      needsRefresh ||
-                                      !m.properties.some((p) => p.writable)
-                                    }
-                                    onClick={() => openPropertyAction('delete', m.id)}
-                                  >
-                                    删除
-                                  </button>
-                                </div>
-                                {(!m.writable || m.dirty) && (
-                                  <small className="row-lock-reason" title={m.reason}>
-                                    {m.dirty
-                                      ? '请先在 SolidWorks 保存，再重新读取'
-                                      : m.reason || '只读'}
-                                  </small>
                                 )}
                               </td>
                             </tr>
@@ -1127,40 +1137,6 @@ export default function App() {
                       <span>{snap.warnings.join(' · ')}</span>
                     </details>
                   )}
-                  {result && (
-                    <div className="result-panel">
-                      <div>
-                        <strong>最近提交结果</strong>
-                        <span>
-                          {result.results.filter((r) => r.success).length} 成功 /{' '}
-                          {result.results.filter((r) => !r.success).length} 失败
-                        </span>
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setPage('history')
-                            void loadHistory()
-                          }}
-                        >
-                          查看记录
-                        </button>
-                      </div>
-                      {result.results.map((r, i) => (
-                        <p key={i} className={!r.success ? 'failure' : ''}>
-                          {r.success ? <Check size={12} /> : <X size={12} />}
-                          <b>
-                            {snap.models.find((m) => m.id === r.modelId)?.name ?? r.modelId} ·{' '}
-                            {r.propertyName}
-                          </b>
-                          <span>
-                            {r.message} · {r.saved ? '已保存' : '未保存文件'} ·{' '}
-                            {r.verified ? '已重读核对（非重开验证）' : '未重读核对'}
-                          </span>
-                        </p>
-                      ))}
-                      {result.backupDirectory && <p>备份目录：{result.backupDirectory}</p>}
-                    </div>
-                  )}
                 </section>
               </div>
             )}
@@ -1188,7 +1164,6 @@ export default function App() {
                       setSnap(null)
                       setEditing(false)
                       setDraft({})
-                      setResult(null)
                       if (session) log('断开连接', session.label)
                     })
                   })
@@ -1349,6 +1324,92 @@ export default function App() {
           </section>
         </div>
       )}
+      {contextMenu &&
+        (() => {
+          const model = snap?.models.find((m) => m.id === contextMenu.modelId)
+          if (!model) return null
+          const prop = model.properties.find((p) => p.name === contextMenu.property)
+          const pending = draft[keyOf(model.id, contextMenu.property)]
+          const locked =
+            !editing || !!busy || needsRefresh || !model.writable || model.dirty || !cap?.writable
+          return (
+            <div
+              className="context-dismiss"
+              onMouseDown={() => setContextMenu(null)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setContextMenu(null)
+              }}
+            >
+              <div
+                className="cell-context-menu"
+                role="menu"
+                aria-label="属性快捷操作"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <strong>{contextMenu.property}</strong>
+                <button
+                  role="menuitem"
+                  disabled={locked}
+                  onClick={() => {
+                    setSelected(new Set([model.id]))
+                    openPropertyAction('add', model.id)
+                    setContextMenu(null)
+                  }}
+                >
+                  新增属性
+                </button>
+                {!prop && !pending && (
+                  <button
+                    role="menuitem"
+                    disabled={locked}
+                    onClick={() => {
+                      addMissingProperty(model, contextMenu.property)
+                      setContextMenu(null)
+                    }}
+                  >
+                    新增此属性
+                  </button>
+                )}
+                <button
+                  role="menuitem"
+                  disabled={locked || (!prop?.writable && pending?.operation !== 'add')}
+                  onClick={() => {
+                    setSelected(new Set([model.id]))
+                    deleteCellProperty(model, contextMenu.property)
+                    setContextMenu(null)
+                  }}
+                >
+                  删除此属性
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={locked || !pending}
+                  onClick={() => {
+                    setDraft((prev) => {
+                      const next = { ...prev }
+                      delete next[keyOf(model.id, contextMenu.property)]
+                      return next
+                    })
+                    setContextMenu(null)
+                  }}
+                >
+                  撤销此项修改
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setActiveCell({ modelId: model.id, property: contextMenu.property })
+                    setDetail(true)
+                    setContextMenu(null)
+                  }}
+                >
+                  查看详情
+                </button>
+              </div>
+            </div>
+          )
+        })()}
       {propertyAction && (
         <div className="modal-backdrop">
           <div

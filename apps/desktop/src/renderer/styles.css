@@ -1,3 +1,47 @@
+.context-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+}
+.cell-context-menu {
+  position: fixed;
+  width: 180px;
+  padding: 6px;
+  border: 1px solid #e0e4eb;
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 8px 28px #15182126;
+}
+.cell-context-menu strong {
+  display: block;
+  padding: 8px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px;
+  border-radius: 3px;
+}
+.cell-context-menu button:hover:not(:disabled) {
+  background: #f4f5f7;
+}
+.cell-context-menu button:disabled {
+  color: #a1a7b4;
+}
+.missing-property {
+  width: 100%;
+  text-align: left;
+  color: #a1a7b4;
+  font-size: 11px;
+}
+.missing-property:not(:disabled) {
+  color: #ee2233;
+}
 :root {
   font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif;
   color: #151821;

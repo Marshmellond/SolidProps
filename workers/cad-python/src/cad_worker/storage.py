@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_PAYLOAD = 4 * 1024 * 1024
+MAX_EXPORT_PAYLOAD = 16 * 1024 * 1024
+MAX_EXPORT_RECORDS = 100000
 PUBLIC_METHODS = {'draft.save', 'draft.load', 'draft.delete', 'history.list', 'history.export', 'history.append'}
 
 
@@ -51,6 +53,42 @@ def changes(value, draft=False):
                 clean[name] = val
         result.append(clean)
     return result
+
+
+def log_field(label, value, indent='  ', empty='（空）'):
+    """Keep user text literal and indent every line, including CRLF values."""
+    value = str(value) if value is not None else '未知'
+    parts = value.replace('\r\n', '\n').replace('\r', '\n').split('\n') if value else [empty]
+    return [f'{indent}{label}：', *(f'{indent}  {line}' for line in parts)]
+
+
+def history_log_record(record):
+    statuses = {'pending': '待确认（保存状态未知）', 'success': '成功', 'failure': '失败',
+                'partial': '部分成功', 'unknown': '未知', 'info': '信息'}
+    operations = {'update': '修改', 'add': '新增', 'delete': '删除'}
+    lines = [f"[{record['time']}] 操作记录"]
+    for label, value in (('记录编号', record['id']), ('标题', record['title']),
+                         ('状态', statuses.get(record['status'], '未知')),
+                         ('说明', record['detail'])):
+        lines.extend(log_field(label, value))
+    for name, label in (('cadId', 'CAD 软件'), ('rootPath', '根文件'), ('scope', '作用范围'),
+                        ('sessionId', '会话编号'), ('finishedAt', '完成时间')):
+        lines.extend(log_field(label, record.get(name) or '未知（未记录）'))
+    if not record['changes']:
+        lines.append('  文件操作：无已记录的属性操作（不代表文件已保存）')
+    for index, change in enumerate(record['changes'], 1):
+        lines.append(f'  文件操作 {index}：')
+        for label, value in (('文件路径', change['modelPath'] or '未知（未记录）'),
+                             ('文件名称', change.get('modelName') or '未知（未记录）'),
+                             ('操作类型', operations.get(change['operation'], '未知')),
+                             ('属性名称', change['propertyName']),
+                             ('旧值', change['oldValue']), ('新值', change['newValue'])):
+            lines.extend(log_field(label, value, '    '))
+        result = {True: '成功', False: '失败', None: '未知（未确认）'}[change.get('success')]
+        saved = {True: '已保存', False: '未保存', None: '未知（未确认）'}[change.get('saved')]
+        for label, value in (('执行结果', result), ('文件保存', saved), ('结果说明', change.get('message', ''))):
+            lines.extend(log_field(label, value, '    '))
+    return '\n'.join(lines) + '\n\n'
 
 
 class Storage:
@@ -107,32 +145,44 @@ class Storage:
             limit, offset = params.get('limit', 100), params.get('offset', 0)
             if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or not 0 <= offset <= 1000000:
                 raise ValueError('Invalid history pagination')
-            records, size, truncated = [], 0, False
-            row_limit = 100001 if export_all else limit
-            budget = 16 * 1024 * 1024 if export_all else MAX_PAYLOAD
+            records, blocks, size, rendered_size, truncated = [], [], 0, 0, False
+            is_export = method == 'history.export'
+            row_limit = MAX_EXPORT_RECORDS + 1 if export_all else limit
+            budget = MAX_EXPORT_PAYLOAD if export_all else MAX_PAYLOAD
             total = self.db.execute('SELECT COUNT(*) FROM history').fetchone()[0]
-            for row in self.db.execute('SELECT record FROM history ORDER BY time DESC,rowid DESC LIMIT ? OFFSET ?', (row_limit, offset)):
+            # The UI remains newest first. A full export reads oldest first; a
+            # page export selects the UI page first, then reverses only that page.
+            order = 'ASC' if export_all else 'DESC'
+            query = f'SELECT record FROM history ORDER BY time {order},rowid {order} LIMIT ? OFFSET ?'
+            for row in self.db.execute(query, (row_limit, offset)):
                 size += len(row[0].encode('utf-8'))
-                if size > budget or len(records) >= 100000:
+                if size > budget or len(records) >= MAX_EXPORT_RECORDS:
                     truncated = True
                     break
-                records.append(json.loads(row[0]))
+                record = json.loads(row[0])
+                if is_export:
+                    block = history_log_record(record)
+                    rendered_size += len(block.encode('utf-8'))
+                    # Reserve room for the bounded summary; do not cut a record
+                    # mid-value or claim that omitted records were exported.
+                    if rendered_size + 4096 > budget:
+                        truncated = True
+                        break
+                    blocks.append(block)
+                records.append(record)
             truncated = truncated or offset > 0 or offset + len(records) < total
-            if method == 'history.list':
+            if not is_export:
                 return records
-            lines = ['CadWeave local operation history', 'Pending/unknown records do not establish whether CAD was saved.',
-                     f'Exported {len(records)} of {total} records; offset={offset}.',
-                     'TRUNCATED / PARTIAL EXPORT: older or skipped records are NOT included.' if truncated else 'Complete history export.', '']
-            for record in records:
-                lines.append(f"[{record['time']}] {record['status']} {record['title']} ({record['id']})")
-                lines.append(record['detail'])
-                context = {name: record[name] for name in ('cadId', 'rootPath', 'scope', 'sessionId', 'finishedAt') if name in record}
-                if context:
-                    lines.append(json.dumps(context, ensure_ascii=False))
-                for change in record['changes']:
-                    lines.append(json.dumps(change, ensure_ascii=False))
-                lines.append('')
-            return dict(suggestedName='CadWeave-history.log', content='\n'.join(lines), truncated=truncated, count=len(records), total=total)
+            if not export_all:
+                blocks.reverse()
+            lines = ['CadWeave 本地操作历史', '排列顺序：从旧到新，最新记录位于底部。',
+                     '待确认或未知结果不能证明 CAD 文件已保存。',
+                     '导出范围：全部历史（从最旧记录起）。' if export_all else '导出范围：按界面从新到旧分页选取，再按从旧到新排列。',
+                     f'已导出 {len(records)} / {total} 条记录；跳过 {offset} 条。',
+                     '截断 / 部分导出：分页、偏移或资源上限导致部分记录未包含；未包含的记录不会显示。' if truncated else '完整历史导出。',
+                     f'资源上限：最多 {MAX_EXPORT_RECORDS} 条记录，源记录及日志各不超过 {budget} 字节；仅导出完整记录。', '']
+            return dict(suggestedName='CadWeave-history.log', content='\n'.join(lines) + '\n' + ''.join(blocks),
+                        truncated=truncated, count=len(records), total=total)
         if method == 'audit.finish':
             fields(params, ('id', 'status', 'detail', 'changes'))
             record_id = text(params['id'], 128, False)

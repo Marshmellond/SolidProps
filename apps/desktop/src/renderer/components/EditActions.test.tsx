@@ -21,7 +21,7 @@ function render(overrides: Partial<EditActionsProps> = {}) {
 describe('explicit property editing actions', () => {
   it('starts in view mode with an edit button, not a save button', () => {
     const html = render()
-    expect(html).toContain('编辑属性')
+    expect(html).toContain('编辑')
     expect(html).not.toContain('save-draft')
     expect(html).toMatch(/data-testid="submit-changes" disabled/)
   })
