@@ -2,6 +2,7 @@ import { Pencil, Save, Send, X } from 'lucide-react'
 
 export interface EditActionsProps {
   editing: boolean
+  hideStart?: boolean
   canStart: boolean
   busy: boolean
   locked: boolean
@@ -18,15 +19,17 @@ export function EditActions(props: EditActionsProps) {
   if (!props.editing)
     return (
       <>
-        <button
-          className="button primary"
-          data-testid="edit-properties"
-          disabled={!props.canStart || props.busy || props.locked}
-          onClick={props.onStart}
-        >
-          <Pencil size={15} />
-          编辑属性
-        </button>
+        {!props.hideStart && (
+          <button
+            className="button primary"
+            data-testid="edit-properties"
+            disabled={!props.canStart || props.busy || props.locked}
+            onClick={props.onStart}
+          >
+            <Pencil size={15} />
+            编辑属性
+          </button>
+        )}
         <button
           className="button primary"
           data-testid="submit-changes"

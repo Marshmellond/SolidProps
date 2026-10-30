@@ -25,6 +25,11 @@ describe('explicit property editing actions', () => {
     expect(html).not.toContain('save-draft')
     expect(html).toMatch(/data-testid="submit-changes" disabled/)
   })
+  it('hides global editing when row actions own editing', () => {
+    const html = render({ hideStart: true })
+    expect(html).not.toContain('edit-properties')
+    expect(html).toContain('submit-changes')
+  })
   it('does not allow entering edit mode without writable properties', () => {
     expect(render({ canStart: false })).toContain('disabled')
     expect(render({ locked: true })).toContain('disabled')

@@ -36,6 +36,7 @@ import type {
   Diagnostic,
   Model,
   Operation,
+  Occurrence,
   Page,
   Session,
   Snapshot,
@@ -68,6 +69,9 @@ const nav = [
   { id: 'connections', label: '连接', icon: Link2 },
   { id: 'history', label: '记录', icon: FileClock },
 ] as const
+function countInstances(root: Occurrence): number {
+  return root.children.reduce((count, child) => count + 1 + countInstances(child), 0)
+}
 const keyOf = (m: string, p: string) => `${m}\u0000${p}`
 function errorText(e: unknown) {
   return e instanceof Error
@@ -129,6 +133,9 @@ export default function App() {
   const [busy, setBusy] = useState(''),
     [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null)
   const [editing, setEditing] = useState(false)
+  const [editingModelId, setEditingModelId] = useState<string | null>(null)
+  const [propertyTargetId, setPropertyTargetId] = useState<string | null>(null)
+  const [focusedOccurrence, setFocusedOccurrence] = useState<string | null>(null)
   const [savedSignature, setSavedSignature] = useState('[]')
   const [savedAt, setSavedAt] = useState('')
   const [draftConflicts, setDraftConflicts] = useState(0)
@@ -308,11 +315,13 @@ export default function App() {
         await loadSavedDraft(data)
         setPage('workspace')
         setFocusedModel(null)
+        setFocusedOccurrence(null)
         log('连接会话', `${s.label} · ${data.models.length} 个模型`)
       })
     })
   }
-  function refresh(scope = snap?.scope ?? 'document') {
+  function refresh() {
+    const scope = 'document'
     guard('重新读取快照？', () => {
       void run('读取模型快照', async () => {
         setNeedsRefresh(true)
@@ -323,6 +332,7 @@ export default function App() {
         setDraft({})
         setSelected(new Set())
         setFocusedModel(null)
+        setFocusedOccurrence(null)
         setNeedsRefresh(false)
         await loadSavedDraft(data)
         log('读取模型快照', `${data.title} · ${data.models.length} 个模型`)
@@ -350,6 +360,7 @@ export default function App() {
     const change = draft[keyOf(m.id, prop)]
     return (
       editing &&
+      (!editingModelId || editingModelId === m.id) &&
       !busy &&
       !needsRefresh &&
       change?.operation !== 'delete' &&
@@ -391,6 +402,26 @@ export default function App() {
   const batchColumns = columns.filter((name) => selectedModels.some((m) => editable(m, name)))
   const draftSaved =
     changes.length > 0 && savedSignature === draftSignature(draft) && !draftConflicts
+  function startRowEdit(model: Model) {
+    if (busy || needsRefresh || !cap?.writable || !model.writable || model.dirty) return
+    setEditing(true)
+    setEditingModelId(model.id)
+    setResult(null)
+  }
+  function openPropertyAction(action: 'add' | 'delete', modelId: string | null) {
+    if (modelId) {
+      const model = snap?.models.find((m) => m.id === modelId)
+      if (!model || !model.writable || model.dirty) return
+      startRowEdit(model)
+    } else {
+      setEditing(true)
+      setEditingModelId(null)
+    }
+    setPropertyTargetId(modelId)
+    setPropertyAction(action)
+    setNewPropertyName('')
+    setNewPropertyValue('')
+  }
   function stagePropertyAction() {
     if (!editing || busy || needsRefresh || !propertyAction) return
     const name = newPropertyName.trim()
@@ -398,7 +429,11 @@ export default function App() {
       setNotice({ text: '请输入有效属性名', error: true })
       return
     }
-    const targets = selectedModels.filter((m) => m.writable && !m.dirty)
+    const targets = (
+      propertyTargetId
+        ? (snap?.models.filter((m) => m.id === propertyTargetId) ?? [])
+        : selectedModels
+    ).filter((m) => m.writable && !m.dirty)
     const next = { ...draft }
     let count = 0
     for (const m of targets) {
@@ -472,7 +507,7 @@ export default function App() {
       // Re-read even when apply reports an exception: never infer CAD state from
       // the optimistic draft or silently retry an uncertain mutation.
       try {
-        const data = await request<Snapshot>('snapshot', { scope: snap.scope })
+        const data = await request<Snapshot>('snapshot', { scope: 'document' })
         setSnap(data)
         setNeedsRefresh(false)
         setSelected(new Set())
@@ -588,6 +623,7 @@ export default function App() {
               </div>
               <div className="title-actions">
                 <EditActions
+                  hideStart
                   editing={editing}
                   canStart={canStartEditing}
                   busy={!!busy}
@@ -595,6 +631,7 @@ export default function App() {
                   changeCount={changes.length}
                   onStart={() => {
                     setEditing(true)
+                    setEditingModelId(null)
                     setResult(null)
                   }}
                   onSave={() => void saveDraft()}
@@ -623,7 +660,7 @@ export default function App() {
                       <FolderTree size={16} />
                       装配结构
                     </span>
-                    <span className="count">{snap.models.length}</span>
+                    <span className="count">{countInstances(snap.root)} 实例</span>
                   </div>
                   <label className="search-field tree-search">
                     <Search size={14} />
@@ -634,11 +671,12 @@ export default function App() {
                     />
                   </label>
                   <div className="tree-tools">
-                    <span>{snap.title}</span>
+                    <span>装配实例</span>
                     <button
                       title="显示所有模型"
                       onClick={() => {
                         setFocusedModel(null)
+                        setFocusedOccurrence(null)
                         setTreeSearch('')
                       }}
                     >
@@ -650,6 +688,7 @@ export default function App() {
                       root={snap.root}
                       query={treeSearch}
                       focusedModelId={focusedModel}
+                      focusedOccurrenceId={focusedOccurrence}
                       collapsedIds={collapsed}
                       onToggle={(id) =>
                         setCollapsed((prev) => {
@@ -658,7 +697,8 @@ export default function App() {
                           return next
                         })
                       }
-                      onLocate={(id) => {
+                      onLocate={(id, occurrenceId) => {
+                        setFocusedOccurrence(occurrenceId ?? null)
                         setFocusedModel(id)
                         setSearch('')
                       }}
@@ -679,7 +719,7 @@ export default function App() {
                   <div className="matrix-heading">
                     <div>
                       <h2>
-                        属性矩阵 <span>{models.length} 个模型</span>
+                        模型文件属性 <span>{models.length} 个文件</span>
                       </h2>
                       <p>
                         {needsRefresh
@@ -690,25 +730,20 @@ export default function App() {
                               ? `草稿已保存 · ${new Date(savedAt).toLocaleString('zh-CN')}`
                               : ''}
                         {focusedModel && (
-                          <button className="text-button" onClick={() => setFocusedModel(null)}>
+                          <button
+                            className="text-button"
+                            onClick={() => {
+                              setFocusedModel(null)
+                              setFocusedOccurrence(null)
+                            }}
+                          >
                             显示全部
                           </button>
                         )}
                       </p>
                     </div>
                     <div className="matrix-heading-actions">
-                      <select
-                        aria-label="属性作用域"
-                        title="文档属性：整个文件共用；当前配置属性：仅属于模型当前规格或配置，目前只读"
-                        value={snap.scope}
-                        disabled={!!busy}
-                        onChange={(e) => refresh(e.target.value as Snapshot['scope'])}
-                      >
-                        <option value="document">文档属性</option>
-                        {cap?.configurations && (
-                          <option value="configuration">当前配置属性（只读）</option>
-                        )}
-                      </select>
+                      <span className="scope-label">文档属性</span>
                       <IconButton title="重新读取快照" onClick={() => refresh()} disabled={!!busy}>
                         <RefreshCw size={16} />
                       </IconButton>
@@ -747,43 +782,47 @@ export default function App() {
                     <button
                       className="plain-button"
                       disabled={
-                        !editing ||
                         !selectedModels.some((m) => m.writable && !m.dirty) ||
                         !!busy ||
-                        needsRefresh
+                        needsRefresh ||
+                        !cap?.writable
                       }
                       onClick={() => {
-                        setPropertyAction('add')
-                        setNewPropertyName('')
-                        setNewPropertyValue('')
-                      }}
-                    >
-                      <Plus size={15} />
-                      新增属性
-                    </button>
-                    <button
-                      className="plain-button"
-                      disabled={!editing || !selected.size || !!busy || needsRefresh}
-                      onClick={() => {
-                        setPropertyAction('delete')
-                        setNewPropertyName(activeCell?.property ?? '')
-                        setNewPropertyValue('')
-                      }}
-                    >
-                      <Trash2 size={15} />
-                      删除属性
-                    </button>
-                    <button
-                      className="plain-button"
-                      disabled={!editing || !batchColumns.length || !!busy || needsRefresh}
-                      onClick={() => {
-                        setBatchProp(batchColumns[0] ?? '')
+                        setEditing(true)
+                        setEditingModelId(null)
+                        setBatchProp(batchColumns[0] ?? columns[0] ?? '')
                         setBatchValue('')
                         setModal('batch')
                       }}
                     >
                       <ClipboardPaste size={15} />
-                      批量赋值
+                      批量修改
+                    </button>
+                    <button
+                      className="plain-button"
+                      disabled={
+                        !selectedModels.some((m) => m.writable && !m.dirty) ||
+                        !!busy ||
+                        needsRefresh ||
+                        !cap?.writable
+                      }
+                      onClick={() => openPropertyAction('add', null)}
+                    >
+                      <Plus size={15} />
+                      批量新增
+                    </button>
+                    <button
+                      className="plain-button"
+                      disabled={
+                        !selectedModels.some((m) => m.writable && !m.dirty) ||
+                        !!busy ||
+                        needsRefresh ||
+                        !cap?.writable
+                      }
+                      onClick={() => openPropertyAction('delete', null)}
+                    >
+                      <Trash2 size={15} />
+                      批量删除
                     </button>
                     <button
                       className="plain-button"
@@ -831,6 +870,7 @@ export default function App() {
                               <th key={p}>{p}</th>
                             ))}
                             <th className="state-col">状态</th>
+                            <th className="row-actions-col">操作</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -883,7 +923,7 @@ export default function App() {
                                       c
                                         ? `原值：${p?.value || '（空）'}`
                                         : !editing && canEdit(m, name, cap, needsRefresh)
-                                          ? '点击右上角“编辑属性”后修改'
+                                          ? '点击本行“编辑”后修改'
                                           : !writable
                                             ? m.reason ||
                                               p?.reason ||
@@ -928,7 +968,7 @@ export default function App() {
                                 ) : !m.writable || m.dirty ? (
                                   <span className="status readonly">
                                     <LockKeyhole size={10} />
-                                    {m.dirty ? '未保存' : '只读'}
+                                    {m.dirty ? 'CAD 有未保存修改' : '只读'}
                                   </span>
                                 ) : needsRefresh ? (
                                   <span className="status readonly">待读取</span>
@@ -937,6 +977,54 @@ export default function App() {
                                     <i />
                                     已读取
                                   </span>
+                                )}
+                              </td>
+                              <td className="row-actions-col">
+                                <div className="row-actions">
+                                  <button
+                                    disabled={
+                                      !m.writable ||
+                                      m.dirty ||
+                                      !cap?.writable ||
+                                      !!busy ||
+                                      needsRefresh
+                                    }
+                                    onClick={() => startRowEdit(m)}
+                                  >
+                                    编辑
+                                  </button>
+                                  <button
+                                    disabled={
+                                      !m.writable ||
+                                      m.dirty ||
+                                      !cap?.writable ||
+                                      !!busy ||
+                                      needsRefresh
+                                    }
+                                    onClick={() => openPropertyAction('add', m.id)}
+                                  >
+                                    新增
+                                  </button>
+                                  <button
+                                    disabled={
+                                      !m.writable ||
+                                      m.dirty ||
+                                      !cap?.writable ||
+                                      !!busy ||
+                                      needsRefresh ||
+                                      !m.properties.some((p) => p.writable)
+                                    }
+                                    onClick={() => openPropertyAction('delete', m.id)}
+                                  >
+                                    删除
+                                  </button>
+                                </div>
+                                {(!m.writable || m.dirty) && (
+                                  <small className="row-lock-reason" title={m.reason}>
+                                    {m.dirty
+                                      ? '请先在 SolidWorks 保存，再重新读取'
+                                      : m.reason || '只读'}
+                                  </small>
                                 )}
                               </td>
                             </tr>
@@ -952,6 +1040,7 @@ export default function App() {
                               setSearch('')
                               setOnlyDirty(false)
                               setFocusedModel(null)
+                              setFocusedOccurrence(null)
                             }}
                           >
                             清除筛选
@@ -987,7 +1076,7 @@ export default function App() {
                                   : inspected.reason || '只读 / 存在未保存修改'}
                               </dd>
                               <dt>属性作用域</dt>
-                              <dd>{snap.scope === 'configuration' ? '当前配置' : '文档'}</dd>
+                              <dd>文档属性</dd>
                               <dt>当前快照</dt>
                               <dd className="mono">{snap.id}</dd>
                             </dl>
@@ -1212,9 +1301,7 @@ export default function App() {
           <span>
             <span className={session ? 'online-dot' : 'offline-dot'} />
             {busy ||
-              (session
-                ? `${cap?.displayName ?? session.label} · ${snap?.scope === 'configuration' ? '配置作用域' : '文档作用域'}`
-                : '就绪 · 请选择连接')}
+              (session ? `${cap?.displayName ?? session.label} · 文档属性` : '就绪 · 请选择连接')}
           </span>
           <span>
             {snap ? `${snap.models.length} 模型 · ${columns.length} 属性列` : ''}
@@ -1301,7 +1388,9 @@ export default function App() {
                 </label>
               )}
               <p>
-                选中 {selected.size} 个模型
+                {propertyTargetId
+                  ? snap?.models.find((m) => m.id === propertyTargetId)?.name
+                  : `选中 ${selected.size} 个文件`}
                 {propertyAction === 'delete' ? '，删除仅在提交后执行' : '，新增文本属性'}
               </p>
             </div>

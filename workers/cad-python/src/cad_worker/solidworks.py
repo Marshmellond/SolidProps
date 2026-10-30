@@ -168,7 +168,22 @@ class SolidWorksAdapter:
         readonly = bool(invoke(document, 'IsOpenedReadOnly'))
         protected = any(Path(path).resolve().is_relative_to(root.resolve()) for root in self.protected_roots) if path else False
         writable = bool(self.bridge.write_certified and scope == 'document' and path and Path(path).is_file() and not dirty and not readonly and not protected and not self.write_uncertain)
-        reason = '' if writable else ('上次保存状态未知，请在CAD检查后重新连接。' if self.write_uncertain else '仅认证版本的非dirty、非只读、非原始测试文件document作用域可写。')
+        if writable:
+            reason = ''
+        elif self.write_uncertain:
+            reason = '上次保存状态未知，请在CAD检查后重新连接。'
+        elif protected:
+            reason = '客户原始测试文件受保护，请使用完整工作副本。'
+        elif dirty:
+            reason = 'SolidWorks 中已有未保存修改；请自行保存或处理后重新读取，避免提交属性时一并保存其他修改。'
+        elif readonly:
+            reason = '文件在 SolidWorks 中以只读方式打开。'
+        elif not self.bridge.write_certified:
+            reason = '当前 SolidWorks 版本尚未认证写入接口，仅可读取。'
+        elif scope != 'document':
+            reason = '仅支持文档属性写入。'
+        else:
+            reason = '模型尚未保存到有效文件路径。'
         for prop in properties:
             if not writable:
                 prop.update(writable=False, reason=reason)
