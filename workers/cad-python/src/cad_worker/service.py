@@ -113,21 +113,35 @@ class Worker:
         seen = set()
         # Whole-batch checks prevent a later malformed property causing partial writes.
         for change in changes:
-            fields(change, ('modelId', 'propertyName', 'oldValue', 'newValue'))
+            fields(change, ('modelId', 'propertyName', 'oldValue', 'newValue'), ('operation',))
             if not all(isinstance(value, str) for value in change.values()) or any(len(value) > 65536 or '\x00' in value for value in change.values()):
                 raise WorkerError('INVALID_PARAMS', '变更字段必须为字符串且不得包含 NUL 或超过65536字符。')
-            key = (change['modelId'], change['propertyName'])
+            operation = change.get('operation', 'update')
+            if operation not in ('add', 'update', 'delete') or not change['propertyName'].strip():
+                raise WorkerError('INVALID_PARAMS', 'operation 必须为 add/update/delete，属性名不能为空。')
+            if (operation == 'add' and change['oldValue'] != '') or (operation == 'delete' and change['newValue'] != ''):
+                raise WorkerError('INVALID_PARAMS', '新增的 oldValue 和删除的 newValue 必须为空字符串。')
+            key = (change['modelId'], change['propertyName'].casefold())
             if key in seen:
                 raise WorkerError('DUPLICATE_CHANGE', '同一属性不能重复提交。')
             seen.add(key)
             model = models.get(change['modelId'])
             if not model:
                 raise WorkerError('UNKNOWN_MODEL', '未知模型，不允许跨快照写入。')
-            prop = next((p for p in model['properties'] if p['name'] == change['propertyName']), None)
-            if prop is None:
-                raise WorkerError('UNKNOWN_PROPERTY', '未知属性；v1 不允许新增或删除属性。')
-            if not model['writable'] or not prop['writable'] or model['dirty']:
-                raise WorkerError('READ_ONLY', model['reason'] or prop['reason'] or '模型已脏，禁止保存。')
+            matches = [p for p in model['properties'] if p['name'].casefold() == change['propertyName'].casefold()]
+            if not model['writable'] or model['dirty']:
+                raise WorkerError('READ_ONLY', model['reason'] or '模型已脏，禁止保存。')
+            if operation == 'add':
+                if matches:
+                    raise WorkerError('PROPERTY_EXISTS', '新增属性名已存在（不区分大小写）。')
+                continue
+            if not matches:
+                raise WorkerError('UNKNOWN_PROPERTY', '待修改或删除的属性不存在。')
+            if len(matches) != 1 or matches[0]['name'] != change['propertyName']:
+                raise WorkerError('PROPERTY_NAME_CONFLICT', '属性名大小写不匹配或存在歧义，请重新读取。')
+            prop = matches[0]
+            if not prop['writable']:
+                raise WorkerError('READ_ONLY', prop['reason'] or '属性不可写。')
             if prop['value'] != change['oldValue']:
                 raise WorkerError('VALUE_CONFLICT', '原值与快照不一致。')
         self.adapter.validate()

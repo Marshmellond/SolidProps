@@ -7,8 +7,13 @@ from cad_worker.contracts import WorkerError
 
 class Manager:
     def __init__(self, values=None):
-        self.values = values or {'名称': '活塞', '材料': '铝'}
+        self.values = {'名称': '活塞', '材料': '铝'} if values is None else values
         self.set_calls = []
+        self.add_calls = []
+        self.delete_calls = []
+        self.add_code = 0
+        self.delete_code = 0
+        self.keep_deleted = False
         self.code = 0
         self.bad_read = False
     def GetNames(self):
@@ -18,6 +23,19 @@ class Manager:
     def Get6(self, name, cached):
         assert cached is True
         return (2, self.values[name], self.values[name], True, False)
+    def Add3(self, name, value_type, value, option):
+        self.add_calls.append((name, value_type, value, option))
+        assert value_type == 30 and option == 0
+        if type(self.add_code) is int and self.add_code == 0:
+            if any(n.casefold() == name.casefold() for n in self.values):
+                return 1
+            self.values[name] = 'bad' if self.bad_read else value
+        return self.add_code
+    def Delete2(self, name):
+        self.delete_calls.append(name)
+        if type(self.delete_code) is int and self.delete_code == 0 and not self.keep_deleted:
+            del self.values[name]
+        return self.delete_code
     def Set2(self, name, value):
         self.set_calls.append((name, value))
         if self.code == 0:

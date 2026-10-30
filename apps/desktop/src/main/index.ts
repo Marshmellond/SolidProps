@@ -2,9 +2,14 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { join, resolve } from "node:path";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { WorkerClient } from "./worker-client";
+import { StorageClient, LOCAL_METHODS } from "./storage-client";
 
 let window: BrowserWindow | null = null;
 let worker: WorkerClient;
+let auditBusy = false;
+let cadBusy = false;
+let lastSnapshot: any = null;
+let lastSession: any = null;
 
 function createWindow(): void {
   window = new BrowserWindow({
@@ -38,7 +43,7 @@ function createWindow(): void {
     if (choice === 1) event.preventDefault();
   });
   window.on("close", (event) => {
-    if (worker.isSaving) {
+    if (worker.isSaving || auditBusy) {
       event.preventDefault();
       void dialog.showMessageBox(window!, {
         type: "warning",
@@ -80,10 +85,93 @@ app.whenReady().then(() => {
         workerRoot,
         log,
       );
-  ipcMain.handle("cad:request", (event, method: unknown, params: unknown) => {
+  const storage = new StorageClient(
+    app.isPackaged ? join(process.resourcesPath, "cad-worker/cad-worker.exe") : join(workerRoot, ".venv/Scripts/python.exe"),
+    app.isPackaged ? [] : ["-m", "cad_worker"],
+    app.isPackaged ? process.resourcesPath : workerRoot,
+    join(app.getPath("userData"), "cadweave.sqlite3"),
+  );
+  ipcMain.handle("local:request", (event, method: unknown, params: unknown) => {
+    if (event.sender !== window?.webContents) throw new Error("未授权窗口");
+    if (typeof method !== "string" || !LOCAL_METHODS.has(method)) throw new Error("不允许的本地操作");
+    return storage.request(method, params ?? {});
+  });
+  ipcMain.handle("cad:request", async (event, method: unknown, params: unknown) => {
     if (event.sender !== window?.webContents) throw new Error("未授权窗口");
     if (typeof method !== "string") throw new Error("无效方法");
-    return worker.request(method, params ?? {});
+    if (cadBusy) throw new Error("CAD 操作进行中，请等待结果");
+    cadBusy = true;
+    try {
+      if (method === "apply") {
+        auditBusy = true;
+        const value = params as any;
+        const snapshot = lastSnapshot;
+        if (!snapshot || !lastSession || snapshot.sessionId !== lastSession.id || value?.snapshotId !== snapshot.id)
+          throw new Error("快照已失效，请重新读取后提交");
+        if (!Array.isArray(value.changes) || !value.changes.length || value.changes.length > 1000)
+          throw new Error("无效的变更列表");
+        const models = new Map<string, any>(snapshot.models.map((model: any) => [model.id, model]));
+        const requested = value.changes.map((change: any) => {
+          const model = models.get(change.modelId);
+          if (!model) throw new Error("未知模型，拒绝跨快照写入");
+          return {
+            modelPath: model.path, modelName: model.name, propertyName: change.propertyName,
+            operation: change.operation ?? "update", oldValue: change.oldValue, newValue: change.newValue,
+            success: null, saved: null, message: "待执行；尚未确认 CAD 写入结果",
+          };
+        });
+        const rootModel = models.get(snapshot.root?.modelId);
+        // This durable commit is mandatory BEFORE any request can mutate CAD.
+        const pending = await storage.request("audit.begin", {
+          title: `写回 CAD · ${snapshot.title}`, detail: `请求 ${requested.length} 项属性变更`,
+          cadId: snapshot.cadId, sessionId: lastSession.id, rootPath: rootModel?.path ?? "",
+          scope: snapshot.scope, changes: requested,
+        }, true);
+        let result: any;
+        try {
+          lastSnapshot = null;
+          result = await worker.request(method, params ?? {});
+        } catch (error) {
+          const detail = `CAD 请求失败；可能发生部分写入，不能认定未保存：${String(error)}`;
+          try {
+            await storage.request("audit.finish", {
+              id: pending.id, status: "unknown", detail,
+              changes: requested.map((change: any) => ({ ...change, message: detail })),
+            }, true);
+          } catch (auditError) {
+            throw new Error(`${detail}；审计结果更新失败，持久记录仍为待确认：${String(auditError)}`);
+          }
+          throw error;
+        }
+        const outcomes = Array.isArray(result?.results) ? result.results : [];
+        const changes = requested.map((change: any, index: number) => {
+          const input = value.changes[index];
+          const outcome = outcomes.find((entry: any) => entry.modelId === input.modelId && entry.propertyName === input.propertyName);
+          return { ...change, success: typeof outcome?.success === "boolean" ? outcome.success : null,
+            saved: typeof outcome?.saved === "boolean" ? outcome.saved : null,
+            message: typeof outcome?.message === "string" ? outcome.message : "未收到此项结果；写入状态未知" };
+        });
+        const status = changes.every((change: any) => change.success === true && change.saved === true) ? "success"
+          : changes.some((change: any) => change.success === null || change.saved === null) ? "unknown"
+          : changes.some((change: any) => change.success) ? "partial" : "failure";
+        try {
+          await storage.request("audit.finish", { id: pending.id, status, detail: `CAD 返回 ${outcomes.length} 项结果`, changes }, true);
+          return { ...result, auditId: pending.id };
+        } catch (auditError) {
+          // CAD already ran: preserve its exact outcomes rather than misreporting a failed save.
+          return { ...result, auditId: pending.id, auditWarning: `CAD 写入结果如下，但审计更新失败（原记录仍为待确认）：${String(auditError)}` };
+        }
+      }
+      if (["connect", "disconnect", "snapshot"].includes(method)) lastSnapshot = null;
+      if (["connect", "disconnect"].includes(method)) lastSession = null;
+      const result: any = await worker.request(method, params ?? {});
+      if (method === "connect") lastSession = result.session;
+      if (method === "snapshot") lastSnapshot = result;
+      return result;
+    } finally {
+      auditBusy = false;
+      cadBusy = false;
+    }
   });
   ipcMain.handle("file:export", async (event, options: unknown) => {
     if (event.sender !== window?.webContents || !window)
@@ -94,7 +182,7 @@ app.whenReady().then(() => {
       typeof value.content !== "string"
     )
       throw new Error("导出参数无效");
-    if (value.content.length > 20_000_000) throw new Error("导出内容过大");
+    if (Buffer.byteLength(value.content, "utf8") > 20_000_000) throw new Error("导出内容过大（最多20MB UTF-8）");
     const safeName = value.suggestedName
       .replace(/[\\/:*?"<>|]/g, "_")
       .slice(0, 120);
@@ -119,7 +207,7 @@ app.whenReady().then(() => {
 });
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", (event) => {
-  if (worker?.isSaving) {
+  if (worker?.isSaving || auditBusy) {
     event.preventDefault();
     return;
   }

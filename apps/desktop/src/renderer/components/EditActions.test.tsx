@@ -22,8 +22,8 @@ describe('explicit property editing actions', () => {
   it('starts in view mode with an edit button, not a save button', () => {
     const html = render()
     expect(html).toContain('编辑属性')
-    expect(html).not.toContain('preview-changes')
-    expect(html).not.toContain('disabled')
+    expect(html).not.toContain('save-draft')
+    expect(html).toMatch(/data-testid="submit-changes" disabled/)
   })
   it('does not allow entering edit mode without writable properties', () => {
     expect(render({ canStart: false })).toContain('disabled')
@@ -33,7 +33,7 @@ describe('explicit property editing actions', () => {
   it('offers cancel and disabled save when editing without changes', () => {
     const html = render({ editing: true })
     expect(html).toContain('取消编辑')
-    expect(html).toMatch(/data-testid="preview-changes" disabled/)
+    expect(html).toMatch(/data-testid="save-draft" disabled/)
     expect(html).not.toContain('edit-properties')
   })
   it('enables save with changes and displays their count', () => {
@@ -43,12 +43,19 @@ describe('explicit property editing actions', () => {
   })
   it('locks saving after an uncertain result but keeps cancellation available', () => {
     const html = render({ editing: true, locked: true, changeCount: 2 })
-    expect(html).toMatch(/data-testid="preview-changes" disabled/)
+    expect(html).toMatch(/data-testid="save-draft" disabled/)
     expect(html).not.toMatch(/data-testid="cancel-edit" disabled/)
+  })
+  it('only enables submit for a persisted draft outside edit mode', () => {
+    expect(render({ changeCount: 2 })).toMatch(/data-testid="submit-changes" disabled/)
+    const html = render({ changeCount: 2, saved: true })
+    expect(html).toContain('提交<b>2</b>')
+    expect(html).not.toContain('disabled')
+    expect(render({ editing: true, changeCount: 2, saved: true })).not.toContain('submit-changes')
   })
   it('disables save and cancel during an operation', () => {
     const html = render({ editing: true, busy: true, changeCount: 2 })
-    expect(html).toMatch(/data-testid="preview-changes" disabled/)
+    expect(html).toMatch(/data-testid="save-draft" disabled/)
     expect(html).toMatch(/data-testid="cancel-edit" disabled/)
   })
 })

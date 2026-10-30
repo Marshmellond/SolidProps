@@ -36,11 +36,7 @@ export function ConnectionPage({
       </div>
       <div className="connection-grid">
         {sessions.map((s) => (
-          <article
-            key={s.id}
-            className="connection-card"
-            data-testid="session-select"
-          >
+          <article key={s.id} className="connection-card" data-testid="session-select">
             <div className="connection-card-top">
               <div className="cad-icon">
                 <Monitor size={28} />
@@ -61,9 +57,7 @@ export function ConnectionPage({
               disabled={!s.connectable || busy}
               onClick={() => onConnect(s)}
             >
-              {session?.id === s.id
-                ? '重新连接并读取'
-                : '连接并读取模型'}
+              {session?.id === s.id ? '重新连接并读取' : '连接并读取模型'}
               <ArrowRight size={15} />
             </button>
           </article>
@@ -78,27 +72,32 @@ export function ConnectionPage({
           <p>请启动受支持的 CAD 并打开模型，再点击重新发现。</p>
         </div>
       )}
-      {diagnostics.length > 0 && (
-        <section className="diagnostics">
-          <h3>
-            <Activity size={16} />
-            发现诊断
-          </h3>
-          {diagnostics.map((d, i) => (
-            <div key={i} className={d.level}>
-              <span className="tag">{d.cadId}</span>
-              <p>{d.message}</p>
-              <span>{d.level === 'error' ? '错误' : d.level === 'warning' ? '提示' : '信息'}</span>
-            </div>
-          ))}
-        </section>
+      {diagnostics.some((d) => d.level !== 'info') && (
+        <details className="diagnostics">
+          <summary>连接诊断</summary>
+          <section>
+            <h3>
+              <Activity size={16} />
+              发现诊断
+            </h3>
+            {diagnostics.map((d, i) => (
+              <div key={i} className={d.level}>
+                <span className="tag">{d.cadId}</span>
+                <p>{d.message}</p>
+                <span>
+                  {d.level === 'error' ? '错误' : d.level === 'warning' ? '提示' : '信息'}
+                </span>
+              </div>
+            ))}
+          </section>
+        </details>
       )}
       {session && (
         <div className="connected-summary">
           <div>
             <span className="online-dot" />
             <strong>当前连接：{session.label}</strong>
-            <p>{capabilities?.notes}</p>
+            {capabilities && !capabilities.writable && <p>当前连接仅支持查看属性</p>}
           </div>
           <button className="button" disabled={busy} onClick={onDisconnect}>
             <Unplug size={15} />

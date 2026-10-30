@@ -49,6 +49,28 @@ describe('safe local editing', () => {
     expect(updateDraft(two, model, '编号', '001')).toEqual({})
     expect(updateDraft({}, model, '未知', 'x')).toEqual({})
   })
+  it('preserves staged additions and prevents editing staged deletions', () => {
+    const add = {
+      modelId: 'm',
+      propertyName: '新属性',
+      operation: 'add' as const,
+      oldValue: '',
+      newValue: 'A',
+    }
+    expect(
+      updateDraft({ [cellKey('m', '新属性')]: add }, model, '新属性', 'B')[cellKey('m', '新属性')],
+    ).toEqual({ ...add, newValue: 'B' })
+    const del = {
+      modelId: 'm',
+      propertyName: '编号',
+      operation: 'delete' as const,
+      oldValue: '001',
+      newValue: '',
+    }
+    expect(
+      updateDraft({ [cellKey('m', '编号')]: del }, model, '编号', 'B')[cellKey('m', '编号')],
+    ).toEqual(del)
+  })
   it('pastes a rectangle and skips readonly and overflow cells', () => {
     const result = rectangularPaste(
       'A\tB\t越界\r\nC\tD\n',

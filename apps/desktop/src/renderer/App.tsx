@@ -6,12 +6,9 @@ import {
   Box,
   Boxes,
   Check,
-  CheckCheck,
   ChevronDown,
-  CircleHelp,
   ClipboardPaste,
   FileClock,
-  FileText,
   FolderTree,
   Info,
   Layers3,
@@ -19,7 +16,7 @@ import {
   Link2,
   Loader2,
   LockKeyhole,
-  Maximize2,
+  Square,
   Minus,
   PanelRightClose,
   PanelRightOpen,
@@ -28,7 +25,6 @@ import {
   Save,
   Search,
   Settings2,
-  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   Undo2,
@@ -52,6 +48,12 @@ import { AssemblyTree } from './components/AssemblyTree'
 import { ConnectionPage } from './components/ConnectionPage'
 import { EditActions } from './components/EditActions'
 import { canEdit, rectangularPaste, updateDraft } from './editing'
+import { draftKey, draftEntries, draftSignature, restoreDraft, type SavedDraft } from './drafts'
+
+async function local<T>(method: string, params: unknown = {}): Promise<T> {
+  if (!window.cadweave?.local) throw new Error('请使用更新后的桌面应用。')
+  return window.cadweave.local(method, params) as Promise<T>
+}
 
 declare global {
   interface Window {
@@ -66,9 +68,9 @@ declare global {
 }
 const nav = [
   { id: 'workspace', label: '工作台', icon: LayoutGrid },
+  { id: 'connections', label: '连接', icon: Link2 },
+  { id: 'history', label: '记录', icon: FileClock },
   { id: 'templates', label: '属性模板', icon: Layers3 },
-  { id: 'history', label: '操作记录', icon: FileClock },
-  { id: 'connections', label: '连接管理', icon: Link2 },
   { id: 'settings', label: '偏好设置', icon: Settings2 },
 ] as const
 const keyOf = (m: string, p: string) => `${m}\u0000${p}`
@@ -139,6 +141,12 @@ export default function App() {
   const [busy, setBusy] = useState(''),
     [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null)
   const [editing, setEditing] = useState(false)
+  const [savedSignature, setSavedSignature] = useState('[]')
+  const [savedAt, setSavedAt] = useState('')
+  const [draftConflicts, setDraftConflicts] = useState(0)
+  const [propertyAction, setPropertyAction] = useState<'add' | 'delete' | null>(null)
+  const [newPropertyName, setNewPropertyName] = useState('')
+  const [newPropertyValue, setNewPropertyValue] = useState('')
   const [draft, setDraft] = useState<Record<string, Change>>({}),
     [selected, setSelected] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState(''),
@@ -173,17 +181,34 @@ export default function App() {
   const [templateName, setTemplateName] = useState('')
   const booted = useRef(false)
   const changes = Object.values(draft)
-  const log = (title: string, text: string, status: Operation['status'] = 'success') =>
-    setLogs((v) => [
-      {
-        id: crypto.randomUUID(),
-        time: new Date().toLocaleString('zh-CN', { hour12: false }),
-        title,
-        detail: text,
-        status,
-      },
-      ...v,
-    ])
+  const [historyOffset, setHistoryOffset] = useState(0)
+  async function loadHistory(offset = 0) {
+    const rows = await local<(Omit<Operation, 'status'> & { status: string })[]>('history.list', {
+      limit: 200,
+      offset,
+    })
+    setHistoryOffset(offset)
+    setLogs(
+      rows.map((row) => ({
+        ...row,
+        status:
+          row.status === 'success'
+            ? 'success'
+            : row.status === 'failure' || row.status === 'error'
+              ? 'error'
+              : 'warning',
+      })),
+    )
+  }
+  const log = (title: string, text: string, status: Operation['status'] = 'success') => {
+    void local('history.append', {
+      title,
+      detail: text,
+      status: status === 'success' ? 'success' : status === 'error' ? 'failure' : 'info',
+    })
+      .then(() => loadHistory())
+      .catch((e) => setNotice({ text: `记录保存失败：${errorText(e)}`, error: true }))
+  }
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label)
     setNotice(null)
@@ -222,25 +247,72 @@ export default function App() {
   }, [templates])
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (Object.keys(draft).length) {
+      if (draftSignature(draft) !== savedSignature) {
         e.preventDefault()
         e.returnValue = ''
       }
     }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
-  }, [draft])
+  }, [draft, savedSignature])
   function guard(title: string, action: () => void) {
-    if (changes.length)
+    if (draftSignature(draft) !== savedSignature)
       setConfirmation({
         title,
-        text: `有 ${changes.length} 项未提交修改，继续将丢弃这些本地修改。`,
+        text: `有 ${changes.length} 项修改尚未保存为草稿，继续将丢弃未保存的修改。`,
         action: () => {
           setDraft({})
           action()
         },
       })
     else action()
+  }
+  async function loadSavedDraft(data: Snapshot) {
+    setDraft({})
+    setSavedSignature('[]')
+    setSavedAt('')
+    setDraftConflicts(0)
+    const saved = await local<SavedDraft | null>('draft.load', draftKey(data))
+    if (!saved) return
+    const restored = restoreDraft(data, saved)
+    setDraft(restored.changes)
+    setSavedAt(saved.savedAt)
+    setDraftConflicts(restored.conflicts.length)
+    if (!restored.conflicts.length) setSavedSignature(draftSignature(restored.changes))
+    else
+      setNotice({
+        text: `${restored.conflicts.length} 项草稿与当前模型冲突，未载入这些项；请检查记录和当前属性后重新编辑并保存。`,
+        error: true,
+      })
+  }
+  async function saveDraft() {
+    if (!snap || busy || needsRefresh) return
+    await run('保存草稿', async () => {
+      let saved = { savedAt: '' }
+      if (changes.length)
+        saved = await local<{ savedAt: string }>('draft.save', {
+          ...draftKey(snap),
+          entries: draftEntries(snap, changes),
+        })
+      else await local('draft.delete', draftKey(snap))
+      setSavedSignature(draftSignature(draft))
+      setSavedAt(saved.savedAt)
+      setDraftConflicts(0)
+      setEditing(false)
+      await local('history.append', {
+        title: '保存草稿',
+        detail: `${snap.title} · ${changes.length} 项变更（未写入 CAD）`,
+        status: 'success',
+        changes: draftEntries(snap, changes).map((c) => ({
+          ...c,
+          modelName: snap.models.find((m) => m.path === c.modelPath)?.name ?? '',
+          success: null,
+          saved: false,
+          message: '已保存本地草稿，尚未提交',
+        })),
+      })
+      await loadHistory()
+    })
   }
   function connect(s: Session) {
     guard('切换连接？', () => {
@@ -260,6 +332,7 @@ export default function App() {
         setSelected(new Set())
         const data = await request<Snapshot>('snapshot', { scope: 'document' })
         setSnap(data)
+        await loadSavedDraft(data)
         setPage('workspace')
         setFocusedModel(null)
         log('连接会话', `${s.label} · ${data.models.length} 个模型`)
@@ -269,6 +342,8 @@ export default function App() {
   function refresh(scope = snap?.scope ?? 'document') {
     guard('重新读取快照？', () => {
       void run('读取模型快照', async () => {
+        setNeedsRefresh(true)
+        setEditing(false)
         const data = await request<Snapshot>('snapshot', { scope })
         setSnap(data)
         setEditing(false)
@@ -276,38 +351,52 @@ export default function App() {
         setSelected(new Set())
         setFocusedModel(null)
         setNeedsRefresh(false)
+        await loadSavedDraft(data)
         log('读取模型快照', `${data.title} · ${data.models.length} 个模型`)
       })
     })
   }
-  const canStartEditing = !!snap?.models.some((m) =>
-    m.properties.some((p) => canEdit(m, p.name, cap, needsRefresh)),
-  )
+  const canStartEditing =
+    !!cap?.writable && !needsRefresh && !!snap?.models.some((m) => m.writable && !m.dirty)
   function cancelEditing() {
     const cancel = () => {
-      setDraft({})
       setEditing(false)
       setModal(null)
       setOnlyDirty(false)
+      if (snap) void run('恢复草稿', () => loadSavedDraft(snap))
     }
-    if (changes.length)
+    if (draftSignature(draft) !== savedSignature)
       setConfirmation({
         title: '取消本次编辑？',
-        text: `将丢弃 ${changes.length} 项本地修改，不会修改或保存 CAD 文件。`,
+        text: '将丢弃尚未保存的编辑，恢复上次草稿，不会修改 CAD 文件。',
         action: cancel,
       })
     else cancel()
   }
   function editable(m: Model, prop: string) {
-    return editing && !busy && canEdit(m, prop, cap, needsRefresh)
+    const change = draft[keyOf(m.id, prop)]
+    return (
+      editing &&
+      !busy &&
+      !needsRefresh &&
+      change?.operation !== 'delete' &&
+      (change?.operation === 'add'
+        ? !!cap?.writable && m.writable && !m.dirty
+        : canEdit(m, prop, cap, needsRefresh))
+    )
   }
   function editValue(m: Model, name: string, value: string) {
     if (!editable(m, name)) return
     setDraft((prev) => updateDraft(prev, m, name, value))
   }
   const columns = useMemo(
-    () => [...new Set(snap?.models.flatMap((m) => m.properties.map((p) => p.name)) ?? [])],
-    [snap],
+    () => [
+      ...new Set([
+        ...(snap?.models.flatMap((m) => m.properties.map((p) => p.name)) ?? []),
+        ...Object.values(draft).map((c) => c.propertyName),
+      ]),
+    ],
+    [snap, draft],
   )
   const models = useMemo(
     () =>
@@ -328,75 +417,119 @@ export default function App() {
     snap?.models.find((m) => selected.has(m.id))
   const selectedModels = snap?.models.filter((m) => selected.has(m.id)) ?? []
   const batchColumns = columns.filter((name) => selectedModels.some((m) => editable(m, name)))
+  const draftSaved =
+    changes.length > 0 && savedSignature === draftSignature(draft) && !draftConflicts
+  function stagePropertyAction() {
+    if (!editing || busy || needsRefresh || !propertyAction) return
+    const name = newPropertyName.trim()
+    if (!name || name.includes('\u0000')) {
+      setNotice({ text: '请输入有效属性名', error: true })
+      return
+    }
+    const targets = selectedModels.filter((m) => m.writable && !m.dirty)
+    const next = { ...draft }
+    let count = 0
+    for (const m of targets) {
+      const existing = m.properties.find((p) => p.name.toLowerCase() === name.toLowerCase())
+      const pending = Object.values(next).find(
+        (c) => c.modelId === m.id && c.propertyName.toLowerCase() === name.toLowerCase(),
+      )
+      if (propertyAction === 'add') {
+        if (existing || pending) continue
+        next[keyOf(m.id, name)] = {
+          modelId: m.id,
+          propertyName: name,
+          operation: 'add',
+          oldValue: '',
+          newValue: newPropertyValue,
+        }
+        count++
+      } else if (pending?.operation === 'add') {
+        delete next[keyOf(m.id, pending.propertyName)]
+        count++
+      } else if (existing && canEdit(m, existing.name, cap, needsRefresh)) {
+        next[keyOf(m.id, existing.name)] = {
+          modelId: m.id,
+          propertyName: existing.name,
+          operation: 'delete',
+          oldValue: existing.value,
+          newValue: '',
+        }
+        count++
+      }
+    }
+    setDraft(next)
+    setPropertyAction(null)
+    setNotice(
+      count
+        ? null
+        : { text: '没有符合条件的属性，请检查选中模型、同名属性和只读状态。', error: true },
+    )
+  }
   async function apply() {
-    if (!editing || busy || !snap || !changes.length || needsRefresh) return
+    if (busy || !snap || !draftSaved || needsRefresh) return
     setModal(null)
     setNeedsRefresh(true)
-    await run('提交并保存', async () => {
-      const r = await request<ApplyResult>('apply', {
-        snapshotId: snap.id,
-        changes,
-        confirmSave: true,
-      })
-      setResult(r)
-      const ok = r.results.filter((v) => v.success).length
-      if (ok === changes.length && r.results.length === changes.length) setEditing(false)
-      log(
-        '提交属性修改',
-        `${ok}/${changes.length} 项成功${r.results.some((v) => !v.success) ? '，存在部分失败' : ''}`,
-        ok === changes.length ? 'success' : 'warning',
-      )
-      setDraft((prev) => {
-        const next = { ...prev }
-        r.results
-          .filter((v) => v.success)
-          .forEach((v) => delete next[keyOf(v.modelId, v.propertyName)])
-        return next
-      })
-      setSnap((prev) =>
-        prev
-          ? {
-              ...prev,
-              models: prev.models.map((m) => ({
-                ...m,
-                properties: m.properties.map((p) => {
-                  const c = draft[keyOf(m.id, p.name)],
-                    success = r.results.find(
-                      (v) => v.modelId === m.id && v.propertyName === p.name && v.success,
-                    )
-                  return c && success ? { ...p, value: c.newValue } : p
-                }),
-              })),
-            }
-          : prev,
-      )
+    setEditing(false)
+    await run('提交属性', async () => {
+      let outcome: ApplyResult | null = null
+      let failure = ''
+      try {
+        outcome = await request<ApplyResult>('apply', {
+          snapshotId: snap.id,
+          changes,
+          confirmSave: true,
+        })
+        setResult(outcome)
+        const pending = changes.filter(
+          (c) =>
+            !outcome!.results.some(
+              (r) =>
+                r.modelId === c.modelId &&
+                r.propertyName === c.propertyName &&
+                r.success &&
+                r.saved,
+            ),
+        )
+        if (pending.length)
+          await local('draft.save', { ...draftKey(snap), entries: draftEntries(snap, pending) })
+        else await local('draft.delete', draftKey(snap))
+      } catch (e) {
+        failure = errorText(e)
+      }
+      // Re-read even when apply reports an exception: never infer CAD state from
+      // the optimistic draft or silently retry an uncertain mutation.
+      try {
+        const data = await request<Snapshot>('snapshot', { scope: snap.scope })
+        setSnap(data)
+        setNeedsRefresh(false)
+        setSelected(new Set())
+        setActiveCell(null)
+        await loadSavedDraft(data)
+      } catch (e) {
+        setNeedsRefresh(true)
+        failure += `${failure ? '；' : ''}自动读取失败：${errorText(e)}`
+      }
+      await loadHistory()
+      const succeeded = outcome?.results.filter((r) => r.success && r.saved).length ?? 0
+      const auditWarning = (outcome as (ApplyResult & { auditWarning?: string }) | null)
+        ?.auditWarning
       setNotice({
-        text: `${ok} 项成功，${r.results.filter((v) => !v.success).length} 项失败。请检查下方结果并重新读取确认。`,
-        error: ok !== changes.length,
+        text:
+          failure ||
+          `${succeeded} 项成功，${changes.length - succeeded} 项未完成${auditWarning ? `；${auditWarning}` : ''}`,
+        error: !!failure || succeeded !== changes.length || !!auditWarning,
       })
     })
   }
   async function exportReport() {
-    const content = JSON.stringify(
-      {
-        exportedAt: new Date().toISOString(),
-        session,
-        snapshotId: snap?.id,
-        changes,
-        result,
-        operations: logs,
-      },
-      null,
-      2,
-    )
-    if (window.cadweave?.exportFile) {
-      const r = await window.cadweave.exportFile({
-        suggestedName: 'CadWeave-操作报告.json',
-        content,
+    await run('导出日志', async () => {
+      const report = await local<{ suggestedName: string; content: string }>('history.export', {
+        all: true,
       })
-      if (r.cancelled) return
-    } else exportText('CadWeave-操作报告.json', content, 'application/json')
-    log('导出操作报告', '已导出当前操作记录与变更结果')
+      if (window.cadweave?.exportFile) await window.cadweave.exportFile(report)
+      else exportText(report.suggestedName, report.content, 'text/plain')
+    })
   }
   function pasteRect(e: React.ClipboardEvent<HTMLInputElement>, m: Model, property: string) {
     if (!editable(m, property)) return
@@ -411,6 +544,7 @@ export default function App() {
       columns.indexOf(property),
       cap,
       needsRefresh,
+      editable,
     )
     cells.forEach((c) => editValue(c.model, c.propertyName, c.value))
     setNotice({
@@ -429,28 +563,16 @@ export default function App() {
             <button
               key={n.id}
               className={page === n.id ? 'active' : ''}
-              onClick={() => setPage(n.id)}
+              onClick={() => {
+                setPage(n.id)
+                if (n.id === 'history') void run('读取记录', loadHistory)
+              }}
               title={n.label}
             >
               <n.icon size={21} />
-              <span>{n.label.slice(0, 2)}</span>
+              <span>{n.label}</span>
             </button>
           ))}
-        </div>
-        <div className="rail-bottom">
-          <IconButton
-            title="使用说明"
-            onClick={() =>
-              setConfirmation({
-                title: '安全地编辑 CAD 属性',
-                text: '连接 → 读取快照 → 点击编辑属性 → 修改 → 点击保存 → 确认写入并保存。多文档保存不具备事务性；遇到部分失败，请检查逐项结果。只读、已有未保存修改的模型不能编辑。Ctrl+C/V 可复制和粘贴表格文本，矩形粘贴会跳过只读单元格。',
-                action: () => {},
-              })
-            }
-          >
-            <CircleHelp size={20} />
-          </IconButton>
-          <div className="avatar">CW</div>
         </div>
       </aside>
       <div className="app-body">
@@ -471,13 +593,7 @@ export default function App() {
                   onClick={() => window.cadweave?.windowControl?.(a)}
                   disabled={!window.cadweave?.windowControl}
                 >
-                  {i === 0 ? (
-                    <Minus size={14} />
-                  ) : i === 1 ? (
-                    <Maximize2 size={12} />
-                  ) : (
-                    <X size={15} />
-                  )}
+                  {i === 0 ? <Minus size={14} /> : i === 1 ? <Square size={12} /> : <X size={15} />}
                 </button>
               ))}
             </div>
@@ -496,16 +612,9 @@ export default function App() {
           <>
             <div className="workspace-title">
               <div>
-                <div className="eyebrow">ENGINEERING WORKSPACE</div>
-                <h1>
-                  属性工作台 <span>工程数据，一处掌控</span>
-                </h1>
+                <h1>属性工作台</h1>
               </div>
               <div className="title-actions">
-                <button className="button" onClick={() => void exportReport()}>
-                  <ArrowDownToLine size={15} />
-                  导出报告
-                </button>
                 <EditActions
                   editing={editing}
                   canStart={canStartEditing}
@@ -516,7 +625,10 @@ export default function App() {
                     setEditing(true)
                     setResult(null)
                   }}
-                  onSave={() => setModal('preview')}
+                  onSave={() => void saveDraft()}
+                  saved={draftSaved}
+                  canSaveEmpty={!!savedAt}
+                  onSubmit={() => setModal('preview')}
                   onCancel={cancelEditing}
                 />
               </div>
@@ -590,13 +702,6 @@ export default function App() {
                       {snap.models.filter((m) => m.kind === 'part').length} 零件
                     </span>
                   </div>
-                  <div className="snapshot-note">
-                    <ShieldCheck size={16} />
-                    <div>
-                      <strong>快照保护已启用</strong>
-                      <span>提交时校验原值与写入能力</span>
-                    </div>
-                  </div>
                 </aside>
                 <section className="matrix-panel">
                   <div className="matrix-heading">
@@ -606,10 +711,12 @@ export default function App() {
                       </h2>
                       <p>
                         {needsRefresh
-                          ? '保存操作后需重新读取，才能继续编辑'
+                          ? '自动读取失败，请重新读取'
                           : editing
-                            ? '编辑中 · 修改尚未写入 CAD，点击保存确认写回'
-                            : '查看模式 · 点击右上角“编辑属性”开始修改'}
+                            ? '编辑中'
+                            : savedAt && changes.length
+                              ? `草稿已保存 · ${new Date(savedAt).toLocaleString('zh-CN')}`
+                              : ''}
                         {focusedModel && (
                           <button className="text-button" onClick={() => setFocusedModel(null)}>
                             显示全部
@@ -620,12 +727,15 @@ export default function App() {
                     <div className="matrix-heading-actions">
                       <select
                         aria-label="属性作用域"
+                        title="文档属性：整个文件共用；当前配置属性：仅属于模型当前规格或配置，目前只读"
                         value={snap.scope}
                         disabled={!!busy}
                         onChange={(e) => refresh(e.target.value as Snapshot['scope'])}
                       >
                         <option value="document">文档属性</option>
-                        {cap?.configurations && <option value="configuration">配置属性</option>}
+                        {cap?.configurations && (
+                          <option value="configuration">当前配置属性（只读）</option>
+                        )}
                       </select>
                       <IconButton title="重新读取快照" onClick={() => refresh()} disabled={!!busy}>
                         <RefreshCw size={16} />
@@ -662,6 +772,35 @@ export default function App() {
                       {changes.length > 0 && <span>{changes.length}</span>}
                     </button>
                     <div className="toolbar-divider" />
+                    <button
+                      className="plain-button"
+                      disabled={
+                        !editing ||
+                        !selectedModels.some((m) => m.writable && !m.dirty) ||
+                        !!busy ||
+                        needsRefresh
+                      }
+                      onClick={() => {
+                        setPropertyAction('add')
+                        setNewPropertyName('')
+                        setNewPropertyValue('')
+                      }}
+                    >
+                      <Plus size={15} />
+                      新增属性
+                    </button>
+                    <button
+                      className="plain-button"
+                      disabled={!editing || !selected.size || !!busy || needsRefresh}
+                      onClick={() => {
+                        setPropertyAction('delete')
+                        setNewPropertyName(activeCell?.property ?? '')
+                        setNewPropertyValue('')
+                      }}
+                    >
+                      <Trash2 size={15} />
+                      删除属性
+                    </button>
                     <button
                       className="plain-button"
                       disabled={!editing || !batchColumns.length || !!busy || needsRefresh}
@@ -760,8 +899,12 @@ export default function App() {
                                 </button>
                               </td>
                               {columns.map((name) => {
-                                const p = m.properties.find((p) => p.name === name),
-                                  c = draft[keyOf(m.id, name)],
+                                const c = draft[keyOf(m.id, name)],
+                                  p =
+                                    m.properties.find((p) => p.name === name) ??
+                                    (c?.operation === 'add'
+                                      ? { name, value: '', writable: true, reason: '' }
+                                      : undefined),
                                   writable = editable(m, name)
                                 return (
                                   <td
@@ -785,7 +928,11 @@ export default function App() {
                                       <input
                                         aria-label={`${m.name} · ${name}`}
                                         readOnly={!writable || !!busy}
-                                        value={c?.newValue ?? p.value}
+                                        value={
+                                          c?.operation === 'delete'
+                                            ? '（待删除）'
+                                            : (c?.newValue ?? p.value)
+                                        }
                                         placeholder={writable ? '—' : ''}
                                         onFocus={() =>
                                           setActiveCell({
@@ -903,7 +1050,7 @@ export default function App() {
                     <div className="refresh-required">
                       <Info size={14} />
                       <span>
-                        提交已执行或状态可能变化，必须重新读取快照后才能继续编辑。未成功项请先导出报告留存。
+                        自动读取失败，请先检查 SolidWorks 状态，再重新读取。执行详情已保留在记录中。
                       </span>
                       <button className="text-button" onClick={() => refresh()}>
                         重新读取 <RefreshCw size={12} />
@@ -914,17 +1061,13 @@ export default function App() {
                     <span>
                       共 {snap.models.length} 个模型 <i /> 已选 {selected.size} 个
                     </span>
-                    <span>
-                      <span className="legend-dot" />{' '}
-                      {changes.length ? `${changes.length} 项本地修改，尚未提交` : '无待提交修改'}{' '}
-                      <span className="shortcut">Ctrl C / V</span>
-                    </span>
+                    {changes.length > 0 && <span>{changes.length} 项变更</span>}
                   </div>
                   {snap.warnings.length > 0 && (
-                    <div className="warning-strip">
-                      <Info size={13} />
+                    <details className="warning-strip">
+                      <summary>读取详情</summary>
                       <span>{snap.warnings.join(' · ')}</span>
-                    </div>
+                    </details>
                   )}
                   {result && (
                     <div className="result-panel">
@@ -934,8 +1077,14 @@ export default function App() {
                           {result.results.filter((r) => r.success).length} 成功 /{' '}
                           {result.results.filter((r) => !r.success).length} 失败
                         </span>
-                        <button className="text-button" onClick={() => refresh()}>
-                          重新读取确认 <RefreshCw size={12} />
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setPage('history')
+                            void loadHistory()
+                          }}
+                        >
+                          查看记录
                         </button>
                       </div>
                       {result.results.map((r, i) => (
@@ -961,25 +1110,7 @@ export default function App() {
         ) : (
           <main className="page-content">
             <div className="page-title">
-              <div className="eyebrow">
-                {page === 'connections'
-                  ? 'CONNECTION CENTER'
-                  : page === 'templates'
-                    ? 'PROPERTY TEMPLATES'
-                    : page === 'history'
-                      ? 'OPERATION HISTORY'
-                      : 'PREFERENCES'}
-              </div>
               <h1>{nav.find((n) => n.id === page)?.label}</h1>
-              <p>
-                {page === 'connections'
-                  ? '连接正在运行的 CAD 会话，建立可追溯的工程数据工作流。'
-                  : page === 'templates'
-                    ? '保存常用属性值，一次应用到多个模型。模板只修改已有且可写的属性。'
-                    : page === 'history'
-                      ? '仅记录当前会话实际发生的操作，不生成虚构历史。'
-                      : '按你的工作习惯配置界面，设置仅保存在当前设备。'}
-              </p>
             </div>
             {page === 'connections' && (
               <ConnectionPage
@@ -1091,9 +1222,7 @@ export default function App() {
                 )}
                 <div className="info-card">
                   <Info size={18} />
-                  <p>
-                    请先在工作台点击“编辑属性”并勾选目标模型，再应用模板。模板尊重只读限制，仅产生本地修改，需点击“保存”确认写回。
-                  </p>
+                  <p>先在工作台编辑并勾选模型，再应用模板。保存为草稿后，点击“提交”写入文件。</p>
                 </div>
               </>
             )}
@@ -1101,7 +1230,7 @@ export default function App() {
               <>
                 <div className="section-toolbar">
                   <h2>
-                    本次会话 <span className="count">{logs.length}</span>
+                    记录 <span className="count">{logs.length}</span>
                   </h2>
                   <button
                     className="button"
@@ -1109,7 +1238,23 @@ export default function App() {
                     onClick={() => void exportReport()}
                   >
                     <ArrowDownToLine size={15} />
-                    导出记录
+                    导出日志
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!!busy || historyOffset === 0}
+                    onClick={() =>
+                      void run('读取记录', () => loadHistory(Math.max(0, historyOffset - 200)))
+                    }
+                  >
+                    上一页
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!!busy || logs.length < 200}
+                    onClick={() => void run('读取记录', () => loadHistory(historyOffset + 200))}
+                  >
+                    下一页
                   </button>
                 </div>
                 {!logs.length ? (
@@ -1137,8 +1282,44 @@ export default function App() {
                             </span>
                           </h3>
                           <p>{l.detail}</p>
+                          {!!l.changes?.length && (
+                            <details className="record-details">
+                              <summary>查看 {l.changes.length} 项变更</summary>
+                              {l.changes.map((c, i) => (
+                                <div className="record-change" key={i}>
+                                  <strong>
+                                    {c.modelName || c.modelPath} · {c.propertyName} ·{' '}
+                                    {c.operation === 'add'
+                                      ? '新增'
+                                      : c.operation === 'delete'
+                                        ? '删除'
+                                        : '修改'}
+                                  </strong>
+                                  <small>{c.modelPath}</small>
+                                  <p>
+                                    原值：
+                                    {c.operation === 'add' ? '（不存在）' : c.oldValue || '（空）'}
+                                  </p>
+                                  <p>
+                                    新值：
+                                    {c.operation === 'delete' ? '（删除）' : c.newValue || '（空）'}
+                                  </p>
+                                  <p>
+                                    {c.success === null ? '状态未知' : c.success ? '成功' : '失败'}{' '}
+                                    ·{' '}
+                                    {c.saved === null
+                                      ? '保存状态未知'
+                                      : c.saved
+                                        ? '已写入文件'
+                                        : '未保存文件'}{' '}
+                                    · {c.message}
+                                  </p>
+                                </div>
+                              ))}
+                            </details>
+                          )}
                         </div>
-                        <time>{l.time}</time>
+                        <time>{new Date(l.time).toLocaleString('zh-CN', { hour12: false })}</time>
                       </article>
                     ))}
                   </div>
@@ -1190,34 +1371,6 @@ export default function App() {
                     </label>
                   ))}
                 </section>
-                <section className="settings-card">
-                  <h2>
-                    <ShieldCheck size={18} />
-                    安全策略
-                  </h2>
-                  <div className="policy-grid">
-                    <div>
-                      <CheckCheck size={20} />
-                      <strong>快照一致性</strong>
-                      <p>所有提交绑定读取时的快照 ID，校验属性原值。</p>
-                    </div>
-                    <div>
-                      <LockKeyhole size={20} />
-                      <strong>只读保护</strong>
-                      <p>不可写属性、模型已有未保存修改时禁止编辑。</p>
-                    </div>
-                    <div>
-                      <FileText size={20} />
-                      <strong>逐项报告</strong>
-                      <p>多文档保存非事务操作，明确展示每项保存和验证状态。</p>
-                    </div>
-                  </div>
-                </section>
-                <div className="about-line">
-                  <span className="small-brand">CadWeave</span>
-                  <span>工程属性工作台 · 协议 v1</span>
-                  <span>真实 CAD 会话</span>
-                </div>
               </>
             )}
           </main>
@@ -1231,7 +1384,7 @@ export default function App() {
                 : '就绪 · 请选择连接')}
           </span>
           <span>
-            {snap ? `${snap.models.length} 模型 · ${columns.length} 属性列` : '安全快照 · 明确提交'}
+            {snap ? `${snap.models.length} 模型 · ${columns.length} 属性列` : ''}
             <i />
             CadWeave 0.1
           </span>
@@ -1276,6 +1429,64 @@ export default function App() {
           </section>
         </div>
       )}
+      {propertyAction && (
+        <div className="modal-backdrop">
+          <div
+            className="modal small"
+            role="dialog"
+            aria-modal="true"
+            aria-label={propertyAction === 'add' ? '新增属性' : '删除属性'}
+          >
+            <div className="modal-header">
+              <h2>{propertyAction === 'add' ? '新增属性' : '删除属性'}</h2>
+              <IconButton title="关闭" onClick={() => setPropertyAction(null)}>
+                <X size={18} />
+              </IconButton>
+            </div>
+            <div className="modal-fields">
+              <label>
+                属性名
+                <input
+                  value={newPropertyName}
+                  onChange={(e) => setNewPropertyName(e.target.value)}
+                  list="property-names"
+                  autoFocus
+                />
+              </label>
+              <datalist id="property-names">
+                {columns.map((name) => (
+                  <option value={name} key={name} />
+                ))}
+              </datalist>
+              {propertyAction === 'add' && (
+                <label>
+                  属性值
+                  <input
+                    value={newPropertyValue}
+                    onChange={(e) => setNewPropertyValue(e.target.value)}
+                  />
+                </label>
+              )}
+              <p>
+                选中 {selected.size} 个模型
+                {propertyAction === 'delete' ? '，删除仅在提交后执行' : '，新增文本属性'}
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="button" onClick={() => setPropertyAction(null)}>
+                取消
+              </button>
+              <button
+                className="button primary"
+                disabled={!newPropertyName.trim() || !!busy}
+                onClick={stagePropertyAction}
+              >
+                加入编辑
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {modal && (
         <div className="modal-backdrop">
           <section
@@ -1283,14 +1494,14 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-label={
-              modal === 'preview' ? '保存属性修改' : modal === 'batch' ? '批量赋值' : '创建属性模板'
+              modal === 'preview' ? '提交属性修改' : modal === 'batch' ? '批量赋值' : '创建属性模板'
             }
           >
             <div className="modal-header">
               <div>
                 <h2>
                   {modal === 'preview'
-                    ? '提交预览'
+                    ? '提交属性修改'
                     : modal === 'batch'
                       ? '批量赋值'
                       : '创建属性模板'}
@@ -1311,7 +1522,7 @@ export default function App() {
               <>
                 <div className="submit-warning">
                   <Info size={16} />
-                  <span>确认即授权保存。多文档保存不具备事务性，可能出现部分成功。</span>
+                  <span>提交后将写入 SolidWorks 文件。</span>
                 </div>
                 <div className="preview-snapshot">
                   快照 ID <code>{snap?.id}</code>
@@ -1330,28 +1541,37 @@ export default function App() {
                         <tr key={keyOf(c.modelId, c.propertyName)}>
                           <td>
                             <strong>{snap?.models.find((m) => m.id === c.modelId)?.name}</strong>
-                            <small>{c.propertyName}</small>
+                            <small>
+                              {c.propertyName} ·{' '}
+                              {c.operation === 'add'
+                                ? '新增'
+                                : c.operation === 'delete'
+                                  ? '删除'
+                                  : '修改'}
+                            </small>
                           </td>
-                          <td>{c.oldValue || '（空）'}</td>
-                          <td className="modified-text">{c.newValue || '（空）'}</td>
+                          <td>{c.operation === 'add' ? '（不存在）' : c.oldValue || '（空）'}</td>
+                          <td className="modified-text">
+                            {c.operation === 'delete' ? '（删除）' : c.newValue || '（空）'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
                 <div className="modal-footer">
-                  <span>以当前快照校验原值后提交</span>
+                  <span />
                   <button className="button" onClick={() => setModal(null)}>
                     返回编辑
                   </button>
                   <button
                     className="button primary"
                     data-testid="apply-changes"
-                    disabled={!editing || !!busy || needsRefresh || !changes.length}
+                    disabled={!!busy || needsRefresh || !draftSaved}
                     onClick={() => void apply()}
                   >
                     <Save size={15} />
-                    确认写入并保存
+                    确认提交
                   </button>
                 </div>
               </>

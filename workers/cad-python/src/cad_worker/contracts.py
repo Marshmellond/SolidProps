@@ -63,6 +63,7 @@ class Snapshot(TypedDict):
     warnings: list[str]
 
 class Change(TypedDict):
+    operation: NotRequired[Literal['add', 'update', 'delete']]
     modelId: str
     propertyName: str
     oldValue: str

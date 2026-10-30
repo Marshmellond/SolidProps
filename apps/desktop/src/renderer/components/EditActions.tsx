@@ -1,4 +1,4 @@
-import { Pencil, Save, X } from 'lucide-react'
+import { Pencil, Save, Send, X } from 'lucide-react'
 
 export interface EditActionsProps {
   editing: boolean
@@ -9,20 +9,34 @@ export interface EditActionsProps {
   onStart: () => void
   onSave: () => void
   onCancel: () => void
+  canSaveEmpty?: boolean
+  saved?: boolean
+  onSubmit?: () => void
 }
 
 export function EditActions(props: EditActionsProps) {
   if (!props.editing)
     return (
-      <button
-        className="button primary"
-        data-testid="edit-properties"
-        disabled={!props.canStart || props.busy || props.locked}
-        onClick={props.onStart}
-      >
-        <Pencil size={15} />
-        编辑属性
-      </button>
+      <>
+        <button
+          className="button primary"
+          data-testid="edit-properties"
+          disabled={!props.canStart || props.busy || props.locked}
+          onClick={props.onStart}
+        >
+          <Pencil size={15} />
+          编辑属性
+        </button>
+        <button
+          className="button primary"
+          data-testid="submit-changes"
+          disabled={!props.saved || !props.changeCount || props.busy || props.locked}
+          onClick={props.onSubmit}
+        >
+          <Send size={15} />
+          提交{props.changeCount > 0 && <b>{props.changeCount}</b>}
+        </button>
+      </>
     )
   return (
     <>
@@ -37,8 +51,8 @@ export function EditActions(props: EditActionsProps) {
       </button>
       <button
         className="button primary"
-        data-testid="preview-changes"
-        disabled={!props.changeCount || props.busy || props.locked}
+        data-testid="save-draft"
+        disabled={(!props.changeCount && !props.canSaveEmpty) || props.busy || props.locked}
         onClick={props.onSave}
       >
         <Save size={15} />

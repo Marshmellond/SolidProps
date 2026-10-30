@@ -28,5 +28,11 @@ artifacts/
 *.[xX]_[tTbB]
 .env
 *.log
+# 本机草稿/操作记录可能包含客户属性，禁止入库
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 playwright-report/
 test-results/

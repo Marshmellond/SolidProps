@@ -31,17 +31,45 @@ def test_invalid_protocol_requests_are_rejected_before_connection(worker):
     assert call(worker, 'apply', snapshotId='x', changes=[], confirmSave=True)['error']['code'] == 'NOT_CONNECTED'
 
 
-@pytest.mark.parametrize('mutator,code', [
-    (lambda c: c.update(oldValue='冲突'), 'VALUE_CONFLICT'),
-    (lambda c: c.update(modelId='unknown'), 'UNKNOWN_MODEL'),
-    (lambda c: c.update(propertyName='新增'), 'UNKNOWN_PROPERTY'),
-    (lambda c: c.update(newValue=None), 'INVALID_PARAMS'),
-    (lambda c: c.update(newValue='a\x00b'), 'INVALID_PARAMS'),
-    (lambda c: c.update(new_value='snake'), 'INVALID_PARAMS'),
+@pytest.fixture
+def connected_worker(worker):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    snapshot = dict(id='snapshot', sessionId='session', scope='document', models=[dict(
+        id='model', writable=True, dirty=False, reason='', properties=[dict(
+            name='Name', value='old', writable=True, reason='')])])
+    calls = []
+    worker.adapter = SimpleNamespace(session={'id': 'session'}, validate=lambda: calls.append('validate'),
+        apply=lambda snapshot, changes: calls.append(changes) or {'results': []})
+    worker.snapshot = deepcopy(snapshot)
+    return worker, calls
+
+
+def valid_change(**overrides):
+    return dict(dict(modelId='model', propertyName='Name', oldValue='old', newValue='new'), **overrides)
+
+
+@pytest.mark.parametrize('overrides,code', [
+    ({'oldValue': '冲突'}, 'VALUE_CONFLICT'),
+    ({'modelId': 'unknown'}, 'UNKNOWN_MODEL'),
+    ({'propertyName': '新增'}, 'UNKNOWN_PROPERTY'),
+    ({'newValue': None}, 'INVALID_PARAMS'),
+    ({'newValue': 'a\x00b'}, 'INVALID_PARAMS'),
+    ({'new_value': 'snake'}, 'INVALID_PARAMS'),
+    ({'operation': None}, 'INVALID_PARAMS'),
+    ({'operation': 'rename'}, 'INVALID_PARAMS'),
+    ({'propertyName': '  '}, 'INVALID_PARAMS'),
+    ({'propertyName': 'name'}, 'PROPERTY_NAME_CONFLICT'),
+    ({'operation': 'add', 'oldValue': ''}, 'PROPERTY_EXISTS'),
+    ({'operation': 'add', 'propertyName': 'Other'}, 'INVALID_PARAMS'),
+    ({'operation': 'delete'}, 'INVALID_PARAMS'),
 ])
-def test_invalid_changes_fail_before_mutation(worker, mutator, code):
-    # Without a real discovered CAD session, no model snapshot or mutation exists.
-    assert call(worker, 'connect', sessionId='synthetic:session')['error']['code'] == 'SESSION_UNAVAILABLE'
+def test_invalid_changes_fail_before_mutation(connected_worker, overrides, code):
+    worker, calls = connected_worker
+    first = valid_change(operation='add', propertyName='ValidFirst', oldValue='')
+    response = call(worker, 'apply', snapshotId='snapshot', changes=[first, valid_change(**overrides)], confirmSave=True)
+    assert response['error']['code'] == code
+    assert calls == [] and worker.snapshot is not None
 
 
 def test_discovery_and_disconnect_invalidate_state(worker):

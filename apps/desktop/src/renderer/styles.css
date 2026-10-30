@@ -1369,6 +1369,32 @@ a {
   margin-top: 7px;
   line-height: 1.6;
 }
+.record-details {
+  margin-top: 12px;
+}
+.record-details summary {
+  cursor: pointer;
+  color: var(--brand);
+}
+.record-change {
+  margin-top: 10px;
+  padding: 12px;
+  background: #f4f5f7;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.record-change small {
+  display: block;
+  margin-top: 5px;
+  color: var(--secondary);
+}
+.record-change p {
+  white-space: pre-wrap;
+  color: var(--secondary);
+}
+.history-list article > div {
+  min-width: 0;
+}
 .history-list time {
   color: #8c93a4;
   font-size: 10px;

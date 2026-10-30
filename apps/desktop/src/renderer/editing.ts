@@ -21,6 +21,10 @@ export function updateDraft(
   newValue: string,
 ): Record<string, Change> {
   const p = model.properties.find((p) => p.name === propertyName)
+  const pending = draft[cellKey(model.id, propertyName)]
+  if (pending?.operation === 'delete') return draft
+  if (pending?.operation === 'add')
+    return { ...draft, [cellKey(model.id, propertyName)]: { ...pending, newValue } }
   if (!p) return draft
   const next = { ...draft },
     key = cellKey(model.id, propertyName)
@@ -49,6 +53,7 @@ export function rectangularPaste(
   startColumn: number,
   capabilities: Capabilities | null,
   locked = false,
+  eligibility?: (model: Model, propertyName: string) => boolean,
 ) {
   const cells: { model: Model; propertyName: string; value: string }[] = []
   let skipped = 0
@@ -60,7 +65,14 @@ export function rectangularPaste(
       row.split('\t').forEach((value, dx) => {
         const model = models[startRow + dy],
           propertyName = columns[startColumn + dx]
-        if (model && propertyName && canEdit(model, propertyName, capabilities, locked))
+        if (
+          model &&
+          propertyName &&
+          !locked &&
+          (eligibility
+            ? eligibility(model, propertyName)
+            : canEdit(model, propertyName, capabilities, locked))
+        )
           cells.push({ model, propertyName, value })
         else skipped++
       }),

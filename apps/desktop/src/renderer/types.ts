@@ -60,6 +60,7 @@ export interface Snapshot {
   warnings: string[]
 }
 export interface Change {
+  operation?: 'update' | 'add' | 'delete'
   modelId: string
   propertyName: string
   oldValue: string
@@ -79,6 +80,7 @@ export interface ApplyResult {
 }
 export interface Bridge {
   request(method: string, params?: unknown): Promise<unknown>
+  local(method: string, params?: unknown): Promise<unknown>
   chooseExport?: (...args: unknown[]) => Promise<unknown>
 }
 export type Page = 'workspace' | 'templates' | 'history' | 'connections' | 'settings'
@@ -88,6 +90,17 @@ export interface Operation {
   title: string
   detail: string
   status: 'success' | 'warning' | 'error'
+  changes?: {
+    modelPath: string
+    modelName: string
+    propertyName: string
+    operation: string
+    oldValue: string
+    newValue: string
+    success: boolean | null
+    saved: boolean | null
+    message: string
+  }[]
 }
 export interface Template {
   id: string

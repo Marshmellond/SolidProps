@@ -48,11 +48,14 @@ class ComBridge:
         status, raw, evaluated, resolved, linked = values
         if type(status) is not int or status not in (0, 2) or not isinstance(raw, str) or not isinstance(evaluated, str) or type(linked) is not bool:
             raise WorkerError('API_UNRELIABLE', 'Get6 返回状态或属性类型无法确认。')
-        return dict(name=name, value=raw, evaluated=evaluated, valueType='text' if int(manager.GetType2(name)) == 30 else 'other', linked=linked, resolved=bool(resolved))
+        value_type = manager.GetType2(name)
+        if type(value_type) is not int:
+            raise WorkerError('API_UNRELIABLE', 'GetType2 未返回明确的整数类型。')
+        return dict(name=name, value=raw, evaluated=evaluated, valueType='text' if value_type == 30 else 'other', linked=linked, resolved=bool(resolved))
 
     def certify(self, revision):
         self.write_certified = revision == '34.0.0'
-        self.write_reason = ('仅 SolidWorks 34.0.0 的document作用域既有普通文本可分文档写回；Save3绑定已在副本认证，生产未重开验证。' if self.write_certified else '当前 SolidWorks revision 未认证 Save3 COM 出参绑定，真实写回禁用。')
+        self.write_reason = ('仅 SolidWorks 34.0.0 的document作用域普通文本可分文档写回；Save3绑定已在副本认证，新增/删除仅经fake COM测试，生产未重开验证。' if self.write_certified else '当前 SolidWorks revision 未认证 Save3 COM 出参绑定，真实写回禁用。')
 
     def save(self, document):
         if not self.write_certified:
@@ -164,8 +167,8 @@ class SolidWorksAdapter:
         dirty = bool(invoke(document, 'GetSaveFlag'))
         readonly = bool(invoke(document, 'IsOpenedReadOnly'))
         protected = any(Path(path).resolve().is_relative_to(root.resolve()) for root in self.protected_roots) if path else False
-        writable = bool(self.bridge.write_certified and scope == 'document' and path and Path(path).is_file() and not dirty and not readonly and not protected)
-        reason = '' if writable else '仅认证版本的非dirty、非只读、非原始测试文件document作用域可写。'
+        writable = bool(self.bridge.write_certified and scope == 'document' and path and Path(path).is_file() and not dirty and not readonly and not protected and not self.write_uncertain)
+        reason = '' if writable else ('上次保存状态未知，请在CAD检查后重新连接。' if self.write_uncertain else '仅认证版本的非dirty、非只读、非原始测试文件document作用域可写。')
         for prop in properties:
             if not writable:
                 prop.update(writable=False, reason=reason)
@@ -195,7 +198,7 @@ class SolidWorksAdapter:
             raise WorkerError('UNSUPPORTED_DOCUMENT', '仅支持零件和装配体，不支持工程图。')
         self.validate()
         self.documents = {}
-        warnings = []
+        warnings = ['上次保存状态未知，请在CAD检查后重新连接；重新读取不会解除写入锁定。'] if self.write_uncertain else []
         path, title, config, kind = self.identity
         model = self._model(self.doc, scope, config, warnings)
         root = dict(id='active', name=title, modelId=model['id'], children=[], status='已加载')
@@ -241,6 +244,35 @@ class SolidWorksAdapter:
             warnings.append(f'发生项读取不完整：{exc}')
             return []
 
+    def _property_names(self, manager):
+        names = invoke(manager, 'GetNames')
+        if names is None:
+            return []
+        if not isinstance(names, (list, tuple)) or any(not isinstance(n, str) or not n.strip() for n in names):
+            raise WorkerError('API_UNRELIABLE', 'GetNames 返回形状或属性名无法确认。')
+        if len({n.casefold() for n in names}) != len(names):
+            raise WorkerError('PROPERTY_NAME_CONFLICT', '存在不区分大小写的属性名冲突。')
+        return names
+
+    def _preflight_property(self, manager, change):
+        operation = change.get('operation', 'update')
+        names = self._property_names(manager)
+        matches = [name for name in names if name.casefold() == change['propertyName'].casefold()]
+        if operation == 'add':
+            if matches:
+                raise WorkerError('PROPERTY_EXISTS', '新增属性名已存在（不区分大小写）。')
+            return
+        if not matches:
+            raise WorkerError('UNKNOWN_PROPERTY', '待修改或删除属性已不存在。')
+        if matches != [change['propertyName']]:
+            raise WorkerError('PROPERTY_NAME_CONFLICT', '属性名称大小写已变化。')
+        prop = self.bridge.property(manager, change['propertyName'])
+        if prop['value'] != change['oldValue']:
+            raise WorkerError('VALUE_CONFLICT', '原属性值已变化，请重新获取快照。')
+        if (prop['valueType'] != 'text' or prop['linked'] or prop['value'] != prop['evaluated']
+                or any(token in prop['value'] for token in ('$PRP', 'SW-', '="'))):
+            raise WorkerError('READ_ONLY', '仅支持未链接普通文本属性。')
+
     def apply(self, snapshot, changes):
         self.validate()
         if self.write_uncertain:
@@ -253,7 +285,16 @@ class SolidWorksAdapter:
         groups, seen = {}, set()
         # Whole-batch identity, original value and dirty preflight before backups.
         for index, change in enumerate(changes):
-            key = (change['modelId'], change['propertyName'])
+            if (not isinstance(change, dict) or set(change) - {'modelId', 'propertyName', 'oldValue', 'newValue', 'operation'}
+                    or not {'modelId', 'propertyName', 'oldValue', 'newValue'} <= change.keys()
+                    or any(not isinstance(v, str) or len(v) > 65536 or '\x00' in v for v in change.values())):
+                raise WorkerError('INVALID_PARAMS', '无效属性变更字段。')
+            operation = change.get('operation', 'update')
+            if operation not in ('add', 'update', 'delete') or not change['propertyName'].strip():
+                raise WorkerError('INVALID_PARAMS', '无效操作或空属性名。')
+            if (operation == 'add' and change['oldValue'] != '') or (operation == 'delete' and change['newValue'] != ''):
+                raise WorkerError('INVALID_PARAMS', '新增 oldValue / 删除 newValue 必须为空字符串。')
+            key = (change['modelId'], change['propertyName'].casefold())
             if key in seen:
                 raise WorkerError('DUPLICATE_CHANGE', '同一属性重复提交。')
             seen.add(key)
@@ -261,15 +302,23 @@ class SolidWorksAdapter:
             model = models.get(change['modelId'])
             if not record or not model or model['path'] != record['path']:
                 raise WorkerError('UNKNOWN_MODEL', '目标不属于当前私有快照映射。')
+            if not model['writable'] or model['dirty']:
+                raise WorkerError('READ_ONLY', model['reason'] or '快照模型不可写。')
+            if operation != 'add':
+                props = [p for p in model['properties'] if p['name'].casefold() == change['propertyName'].casefold()]
+                if len(props) != 1 or props[0]['name'] != change['propertyName']:
+                    raise WorkerError('UNKNOWN_PROPERTY', '属性不属于快照或名称有歧义。')
+                if not props[0]['writable']:
+                    raise WorkerError('READ_ONLY', props[0]['reason'] or '快照属性不可写。')
+                if props[0]['value'] != change['oldValue']:
+                    raise WorkerError('VALUE_CONFLICT', '原值与快照不一致。')
+            elif any(p['name'].casefold() == change['propertyName'].casefold() for p in model['properties']):
+                raise WorkerError('PROPERTY_EXISTS', '快照中新增属性名已存在。')
             doc = self._validate_target(record)
-            if any(token in change['newValue'] for token in ('$PRP', 'SW-', '="')):
+            if operation != 'delete' and any(token in change['newValue'] for token in ('$PRP', 'SW-', '="')):
                 raise WorkerError('UNSUPPORTED_VALUE', '不接受可能触发链接/表达式的新值。')
             manager = invoke(doc, 'Extension').CustomPropertyManager('')
-            prop = self.bridge.property(manager, change['propertyName'])
-            if prop['value'] != change['oldValue']:
-                raise WorkerError('VALUE_CONFLICT', '原属性值已变化，请重新获取快照。')
-            if prop['valueType'] != 'text' or prop['linked'] or prop['value'] != prop['evaluated']:
-                raise WorkerError('READ_ONLY', '仅支持既有未链接普通文本。')
+            self._preflight_property(manager, change)
             group = groups.setdefault(record['canonical'], dict(record=record, manager=manager, items=[]))
             if group['record']['doc'] != doc:
                 raise WorkerError('AMBIGUOUS_DOCUMENT', '同文件多COM文档，拒绝保存。')
@@ -289,9 +338,11 @@ class SolidWorksAdapter:
                     raise OSError('备份校验失败')
         except OSError as exc:
             raise WorkerError('BACKUP_FAILED', f'全批备份失败，未修改模型：{exc}') from exc
-        # Recheck EVERY target after ALL backups and before first Set2.
+        # Recheck EVERY target and property after ALL backups, before mutation.
         for group in groups.values():
             self._validate_target(group['record'])
+            for _, change in group['items']:
+                self._preflight_property(group['manager'], change)
         results = [result(c, message='前文档失败，尚未执行/已取消。') for c in changes]
         for group in groups.values():
             manager, record = group['manager'], group['record']
@@ -299,17 +350,32 @@ class SolidWorksAdapter:
                 document = self._validate_target(record)
                 for index, change in group['items']:
                     self._validate_target(record, clean=False)
-                    current = self.bridge.property(manager, change['propertyName'])
-                    if current['value'] != change['oldValue']:
-                        raise WorkerError('VALUE_CONFLICT', '写入前原值冲突。')
-                    if current['valueType'] != 'text' or current['linked'] or current['value'] != current['evaluated']:
-                        raise WorkerError('READ_ONLY', '写入前属性类型或链接状态变化。')
+                    self._preflight_property(manager, change)
+                    operation = change.get('operation', 'update')
                     self.write_uncertain = True
-                    code = manager.Set2(change['propertyName'], change['newValue'])
+                    if operation == 'add':
+                        # swCustomInfoText=30, swCustomPropertyOnlyIfNew=0.
+                        # Never delete/replace an existing property as part of add.
+                        code = manager.Add3(change['propertyName'], 30, change['newValue'], 0)
+                        api = 'Add3'
+                    elif operation == 'delete':
+                        code = manager.Delete2(change['propertyName'])
+                        api = 'Delete2'
+                    else:
+                        code = manager.Set2(change['propertyName'], change['newValue'])
+                        api = 'Set2'
                     if type(code) is not int or code != 0:
-                        raise WorkerError('SET_FAILED', f'Set2未明确成功：{code!r}')
-                    if self.bridge.property(manager, change['propertyName'])['value'] != change['newValue']:
-                        raise WorkerError('VERIFY_FAILED', '内存回读失败，未保存。')
+                        raise WorkerError({'add': 'ADD_FAILED', 'delete': 'DELETE_FAILED', 'update': 'SET_FAILED'}[operation], f'{api}未明确成功：{code!r}')
+                    names = self._property_names(manager)
+                    matches = [n for n in names if n.casefold() == change['propertyName'].casefold()]
+                    if operation == 'delete':
+                        if matches:
+                            raise WorkerError('VERIFY_FAILED', '删除后属性仍存在，未保存。')
+                    else:
+                        if matches != [change['propertyName']]:
+                            raise WorkerError('VERIFY_FAILED', '写入后属性名不匹配，未保存。')
+                        # Verify raw value, text type, linkage and evaluated value.
+                        self._preflight_property(manager, dict(change, operation='update', oldValue=change['newValue']))
                     results[index] = result(change, message='内存回读一致，尚未保存。')
                 self._validate_target(record, clean=False)
                 saved, errors, warnings = self.bridge.save(document)
