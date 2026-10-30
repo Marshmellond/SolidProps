@@ -50,6 +50,7 @@ import type {
 import { exportText, request } from './bridge'
 import { AssemblyTree } from './components/AssemblyTree'
 import { ConnectionPage } from './components/ConnectionPage'
+import { EditActions } from './components/EditActions'
 import { canEdit, rectangularPaste, updateDraft } from './editing'
 
 declare global {
@@ -137,6 +138,7 @@ export default function App() {
     [snap, setSnap] = useState<Snapshot | null>(null)
   const [busy, setBusy] = useState(''),
     [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null)
+  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<string, Change>>({}),
     [selected, setSelected] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState(''),
@@ -250,6 +252,7 @@ export default function App() {
         setSession(c.session)
         setCap(c.capabilities)
         setSnap(null)
+        setEditing(false)
         setDraft({})
         setResult(null)
         setNeedsRefresh(false)
@@ -268,6 +271,7 @@ export default function App() {
       void run('读取模型快照', async () => {
         const data = await request<Snapshot>('snapshot', { scope })
         setSnap(data)
+        setEditing(false)
         setDraft({})
         setSelected(new Set())
         setFocusedModel(null)
@@ -276,8 +280,26 @@ export default function App() {
       })
     })
   }
+  const canStartEditing = !!snap?.models.some((m) =>
+    m.properties.some((p) => canEdit(m, p.name, cap, needsRefresh)),
+  )
+  function cancelEditing() {
+    const cancel = () => {
+      setDraft({})
+      setEditing(false)
+      setModal(null)
+      setOnlyDirty(false)
+    }
+    if (changes.length)
+      setConfirmation({
+        title: '取消本次编辑？',
+        text: `将丢弃 ${changes.length} 项本地修改，不会修改或保存 CAD 文件。`,
+        action: cancel,
+      })
+    else cancel()
+  }
   function editable(m: Model, prop: string) {
-    return canEdit(m, prop, cap, needsRefresh)
+    return editing && !busy && canEdit(m, prop, cap, needsRefresh)
   }
   function editValue(m: Model, name: string, value: string) {
     if (!editable(m, name)) return
@@ -307,7 +329,7 @@ export default function App() {
   const selectedModels = snap?.models.filter((m) => selected.has(m.id)) ?? []
   const batchColumns = columns.filter((name) => selectedModels.some((m) => editable(m, name)))
   async function apply() {
-    if (!snap || !changes.length || needsRefresh) return
+    if (!editing || busy || !snap || !changes.length || needsRefresh) return
     setModal(null)
     setNeedsRefresh(true)
     await run('提交并保存', async () => {
@@ -318,6 +340,7 @@ export default function App() {
       })
       setResult(r)
       const ok = r.results.filter((v) => v.success).length
+      if (ok === changes.length && r.results.length === changes.length) setEditing(false)
       log(
         '提交属性修改',
         `${ok}/${changes.length} 项成功${r.results.some((v) => !v.success) ? '，存在部分失败' : ''}`,
@@ -376,6 +399,7 @@ export default function App() {
     log('导出操作报告', '已导出当前操作记录与变更结果')
   }
   function pasteRect(e: React.ClipboardEvent<HTMLInputElement>, m: Model, property: string) {
+    if (!editable(m, property)) return
     const text = e.clipboardData.getData('text/plain')
     if (!text.includes('\t') && !text.includes('\n')) return
     e.preventDefault()
@@ -419,7 +443,7 @@ export default function App() {
             onClick={() =>
               setConfirmation({
                 title: '安全地编辑 CAD 属性',
-                text: '连接 → 读取快照 → 编辑现有属性 → 预览变更 → 确认保存。多文档保存不具备事务性；遇到部分失败，请检查逐项结果。只读、已有未保存修改的模型不能编辑。Ctrl+C/V 可复制和粘贴表格文本，矩形粘贴会跳过只读单元格。',
+                text: '连接 → 读取快照 → 点击编辑属性 → 修改 → 点击保存 → 确认写入并保存。多文档保存不具备事务性；遇到部分失败，请检查逐项结果。只读、已有未保存修改的模型不能编辑。Ctrl+C/V 可复制和粘贴表格文本，矩形粘贴会跳过只读单元格。',
                 action: () => {},
               })
             }
@@ -482,15 +506,19 @@ export default function App() {
                   <ArrowDownToLine size={15} />
                   导出报告
                 </button>
-                <button
-                  className="button primary"
-                  data-testid="preview-changes"
-                  disabled={!changes.length || !!busy || needsRefresh}
-                  onClick={() => setModal('preview')}
-                >
-                  <Save size={15} />
-                  预览并提交{changes.length > 0 && <b>{changes.length}</b>}
-                </button>
+                <EditActions
+                  editing={editing}
+                  canStart={canStartEditing}
+                  busy={!!busy}
+                  locked={needsRefresh}
+                  changeCount={changes.length}
+                  onStart={() => {
+                    setEditing(true)
+                    setResult(null)
+                  }}
+                  onSave={() => setModal('preview')}
+                  onCancel={cancelEditing}
+                />
               </div>
             </div>
             {!snap ? (
@@ -577,9 +605,11 @@ export default function App() {
                         属性矩阵 <span>{models.length} 个模型</span>
                       </h2>
                       <p>
-                        {focusedModel
-                          ? '已定位单个模型'
-                          : '编辑现有属性，所有修改提交前仅保存在本地'}
+                        {needsRefresh
+                          ? '保存操作后需重新读取，才能继续编辑'
+                          : editing
+                            ? '编辑中 · 修改尚未写入 CAD，点击保存确认写回'
+                            : '查看模式 · 点击右上角“编辑属性”开始修改'}
                         {focusedModel && (
                           <button className="text-button" onClick={() => setFocusedModel(null)}>
                             显示全部
@@ -634,7 +664,7 @@ export default function App() {
                     <div className="toolbar-divider" />
                     <button
                       className="plain-button"
-                      disabled={!selected.size || !cap?.writable || !!busy}
+                      disabled={!editing || !batchColumns.length || !!busy || needsRefresh}
                       onClick={() => {
                         setBatchProp(batchColumns[0] ?? '')
                         setBatchValue('')
@@ -740,13 +770,15 @@ export default function App() {
                                     title={
                                       c
                                         ? `原值：${p?.value || '（空）'}`
-                                        : !writable
-                                          ? m.reason ||
-                                            p?.reason ||
-                                            (m.dirty
-                                              ? '模型已有未保存修改，禁止保存'
-                                              : '只读或无此属性')
-                                          : ''
+                                        : !editing && canEdit(m, name, cap, needsRefresh)
+                                          ? '点击右上角“编辑属性”后修改'
+                                          : !writable
+                                            ? m.reason ||
+                                              p?.reason ||
+                                              (m.dirty
+                                                ? '模型已有未保存修改，禁止保存'
+                                                : '只读或无此属性')
+                                            : ''
                                     }
                                   >
                                     {p ? (
@@ -965,6 +997,7 @@ export default function App() {
                       setSession(null)
                       setCap(null)
                       setSnap(null)
+                      setEditing(false)
                       setDraft({})
                       setResult(null)
                       if (session) log('断开连接', session.label)
@@ -1032,7 +1065,7 @@ export default function App() {
                         </div>
                         <button
                           className="button"
-                          disabled={!selectedModels.length || !!busy}
+                          disabled={!editing || !selectedModels.length || !!busy || needsRefresh}
                           onClick={() => {
                             let count = 0
                             selectedModels.forEach((m) =>
@@ -1059,7 +1092,7 @@ export default function App() {
                 <div className="info-card">
                   <Info size={18} />
                   <p>
-                    模板应用尊重模型与属性的只读限制。请先在工作台勾选目标模型，应用后预览变更并确认提交。
+                    请先在工作台点击“编辑属性”并勾选目标模型，再应用模板。模板尊重只读限制，仅产生本地修改，需点击“保存”确认写回。
                   </p>
                 </div>
               </>
@@ -1250,7 +1283,7 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-label={
-              modal === 'preview' ? '提交预览' : modal === 'batch' ? '批量赋值' : '创建属性模板'
+              modal === 'preview' ? '保存属性修改' : modal === 'batch' ? '批量赋值' : '创建属性模板'
             }
           >
             <div className="modal-header">
@@ -1314,7 +1347,7 @@ export default function App() {
                   <button
                     className="button primary"
                     data-testid="apply-changes"
-                    disabled={!!busy || !changes.length}
+                    disabled={!editing || !!busy || needsRefresh || !changes.length}
                     onClick={() => void apply()}
                   >
                     <Save size={15} />
