@@ -11,7 +11,6 @@ import {
   FileClock,
   FolderTree,
   Info,
-  Layers3,
   LayoutGrid,
   Link2,
   Loader2,
@@ -24,7 +23,6 @@ import {
   RefreshCw,
   Save,
   Search,
-  Settings2,
   SlidersHorizontal,
   Trash2,
   Undo2,
@@ -41,7 +39,6 @@ import type {
   Page,
   Session,
   Snapshot,
-  Template,
 } from './types'
 import { exportText, request } from './bridge'
 import { AssemblyTree } from './components/AssemblyTree'
@@ -70,17 +67,8 @@ const nav = [
   { id: 'workspace', label: '工作台', icon: LayoutGrid },
   { id: 'connections', label: '连接', icon: Link2 },
   { id: 'history', label: '记录', icon: FileClock },
-  { id: 'templates', label: '属性模板', icon: Layers3 },
-  { id: 'settings', label: '偏好设置', icon: Settings2 },
 ] as const
 const keyOf = (m: string, p: string) => `${m}\u0000${p}`
-function stored<T>(key: string, initial: T): T {
-  try {
-    return JSON.parse(localStorage.getItem(key) || 'null') ?? initial
-  } catch {
-    return initial
-  }
-}
 function errorText(e: unknown) {
   return e instanceof Error
     ? e.message
@@ -158,7 +146,7 @@ export default function App() {
       modelId: string
       property: string
     } | null>(null)
-  const [modal, setModal] = useState<'preview' | 'batch' | 'template' | null>(null),
+  const [modal, setModal] = useState<'preview' | 'batch' | null>(null),
     [confirmation, setConfirmation] = useState<{
       title: string
       text: string
@@ -170,15 +158,6 @@ export default function App() {
     [logs, setLogs] = useState<Operation[]>([])
   const [needsRefresh, setNeedsRefresh] = useState(false),
     [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [settings, setSettings] = useState(() =>
-    stored('cadweave.settings', {
-      dense: false,
-      showReadonly: true,
-      showPaths: false,
-    }),
-  )
-  const [templates, setTemplates] = useState<Template[]>(() => stored('cadweave.templates', []))
-  const [templateName, setTemplateName] = useState('')
   const booted = useRef(false)
   const changes = Object.values(draft)
   const [historyOffset, setHistoryOffset] = useState(0)
@@ -239,12 +218,6 @@ export default function App() {
       void discover()
     }
   }, [])
-  useEffect(() => {
-    localStorage.setItem('cadweave.settings', JSON.stringify(settings))
-  }, [settings])
-  useEffect(() => {
-    localStorage.setItem('cadweave.templates', JSON.stringify(templates))
-  }, [templates])
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
       if (draftSignature(draft) !== savedSignature) {
@@ -403,14 +376,13 @@ export default function App() {
       (snap?.models ?? []).filter(
         (m) =>
           (!focusedModel || m.id === focusedModel) &&
-          (settings.showReadonly || m.writable) &&
           (!search ||
             `${m.name} ${m.path} ${m.properties.map((p) => p.value).join(' ')}`
               .toLowerCase()
               .includes(search.toLowerCase())) &&
           (!onlyDirty || changes.some((c) => c.modelId === m.id)),
       ),
-    [snap, focusedModel, settings.showReadonly, search, onlyDirty, draft],
+    [snap, focusedModel, search, onlyDirty, draft],
   )
   const inspected =
     snap?.models.find((m) => m.id === activeCell?.modelId) ??
@@ -552,7 +524,7 @@ export default function App() {
     })
   }
   return (
-    <div className={`app ${settings.dense ? 'compact' : ''}`}>
+    <div className="app">
       <aside className="rail">
         <button className="brand-mark" title="CadWeave" onClick={() => setPage('workspace')}>
           <span>C</span>
@@ -891,10 +863,7 @@ export default function App() {
                                   }}
                                 >
                                   {m.kind === 'assembly' ? <Boxes size={17} /> : <Box size={16} />}
-                                  <span>
-                                    {m.name}
-                                    {settings.showPaths && <small>{m.path}</small>}
-                                  </span>
+                                  <span>{m.name}</span>
                                   {!m.writable && <LockKeyhole size={12} />}
                                 </button>
                               </td>
@@ -1137,95 +1106,6 @@ export default function App() {
                 }
               />
             )}
-            {page === 'templates' && (
-              <>
-                <div className="section-toolbar">
-                  <h2>
-                    我的模板 <span className="count">{templates.length}</span>
-                  </h2>
-                  <button
-                    className="button primary"
-                    disabled={!snap || !columns.length}
-                    onClick={() => {
-                      setTemplateName('')
-                      setModal('template')
-                    }}
-                  >
-                    <Plus size={15} />
-                    从当前模型创建
-                  </button>
-                </div>
-                {!templates.length ? (
-                  <Empty
-                    icon={<Layers3 size={34} />}
-                    title="把重复录入，变成一次操作"
-                    text="连接模型后，从当前选中或第一个模型保存一个属性模板。模板保存在本地，不会自动写入 CAD。"
-                  />
-                ) : (
-                  <div className="template-grid">
-                    {templates.map((t) => (
-                      <article className="template-card" key={t.id}>
-                        <div className="template-card-top">
-                          <div className="template-icon">
-                            <Layers3 size={22} />
-                          </div>
-                          <IconButton
-                            title={`删除模板 ${t.name}`}
-                            onClick={() =>
-                              setConfirmation({
-                                title: '删除此模板？',
-                                text: t.name,
-                                action: () => setTemplates((v) => v.filter((a) => a.id !== t.id)),
-                              })
-                            }
-                          >
-                            <Trash2 size={15} />
-                          </IconButton>
-                        </div>
-                        <h2>{t.name}</h2>
-                        <p>{t.description}</p>
-                        <div className="template-values">
-                          {Object.entries(t.values)
-                            .slice(0, 4)
-                            .map(([k, v]) => (
-                              <div key={k}>
-                                <span>{k}</span>
-                                <b>{v || '（空）'}</b>
-                              </div>
-                            ))}
-                        </div>
-                        <button
-                          className="button"
-                          disabled={!editing || !selectedModels.length || !!busy || needsRefresh}
-                          onClick={() => {
-                            let count = 0
-                            selectedModels.forEach((m) =>
-                              Object.entries(t.values).forEach(([p, v]) => {
-                                if (editable(m, p)) {
-                                  editValue(m, p, v)
-                                  count++
-                                }
-                              }),
-                            )
-                            setNotice({
-                              text: `模板已赋值 ${count} 项可写属性；仅生成本地修改，需预览提交。`,
-                            })
-                            setPage('workspace')
-                          }}
-                        >
-                          应用到 {selected.size} 个选中模型
-                          <ArrowRight size={14} />
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                )}
-                <div className="info-card">
-                  <Info size={18} />
-                  <p>先在工作台编辑并勾选模型，再应用模板。保存为草稿后，点击“提交”写入文件。</p>
-                </div>
-              </>
-            )}
             {page === 'history' && (
               <>
                 <div className="section-toolbar">
@@ -1324,53 +1204,6 @@ export default function App() {
                     ))}
                   </div>
                 )}
-              </>
-            )}
-            {page === 'settings' && (
-              <>
-                <section className="settings-card">
-                  <h2>
-                    <SlidersHorizontal size={18} />
-                    显示与编辑
-                  </h2>
-                  {(
-                    [
-                      {
-                        key: 'dense',
-                        title: '紧凑行高',
-                        text: '缩小属性矩阵行高，在一个屏幕内查看更多模型。',
-                      },
-                      {
-                        key: 'showReadonly',
-                        title: '显示只读模型',
-                        text: '只读模型保留在矩阵中并明确标记，不允许编辑。',
-                      },
-                      {
-                        key: 'showPaths',
-                        title: '显示模型路径',
-                        text: '在模型名称下方显示源文件路径。',
-                      },
-                    ] as const
-                  ).map((s) => (
-                    <label className="setting-row" key={s.key}>
-                      <span>
-                        <strong>{s.title}</strong>
-                        <small>{s.text}</small>
-                      </span>
-                      <input
-                        className="switch"
-                        type="checkbox"
-                        checked={settings[s.key]}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            [s.key]: e.target.checked,
-                          })
-                        }
-                      />
-                    </label>
-                  ))}
-                </section>
               </>
             )}
           </main>
@@ -1493,25 +1326,15 @@ export default function App() {
             className={`modal ${modal === 'preview' ? 'preview-modal' : ''}`}
             role="dialog"
             aria-modal="true"
-            aria-label={
-              modal === 'preview' ? '提交属性修改' : modal === 'batch' ? '批量赋值' : '创建属性模板'
-            }
+            aria-label={modal === 'preview' ? '提交属性修改' : '批量赋值'}
           >
             <div className="modal-header">
               <div>
-                <h2>
-                  {modal === 'preview'
-                    ? '提交属性修改'
-                    : modal === 'batch'
-                      ? '批量赋值'
-                      : '创建属性模板'}
-                </h2>
+                <h2>{modal === 'preview' ? '提交属性修改' : '批量赋值'}</h2>
                 <p>
                   {modal === 'preview'
                     ? `确认 ${changes.length} 项属性变更并写入 CAD 文档`
-                    : modal === 'batch'
-                      ? `作用于 ${selectedModels.length} 个选中模型，仅修改既有可写属性`
-                      : '从选中模型或第一个模型保存现有属性值'}
+                    : `作用于 ${selectedModels.length} 个选中模型，仅修改既有可写属性`}
                 </p>
               </div>
               <IconButton title="关闭弹窗" onClick={() => setModal(null)}>
@@ -1622,56 +1445,6 @@ export default function App() {
                     }}
                   >
                     应用到本地修改
-                  </button>
-                </div>
-              </>
-            )}
-            {modal === 'template' && (
-              <>
-                <div className="modal-fields">
-                  <label>
-                    模板名称
-                    <input
-                      autoFocus
-                      placeholder="例如：设计发布标准"
-                      value={templateName}
-                      onChange={(e) => setTemplateName(e.target.value)}
-                    />
-                  </label>
-                  <p className="muted">
-                    来源：{(selectedModels[0] ?? snap?.models[0])?.name}
-                    。包含当前本地修改的属性值。
-                  </p>
-                </div>
-                <div className="modal-footer">
-                  <button className="button" onClick={() => setModal(null)}>
-                    取消
-                  </button>
-                  <button
-                    className="button primary"
-                    disabled={!templateName.trim()}
-                    onClick={() => {
-                      const m = selectedModels[0] ?? snap?.models[0]
-                      if (!m) return
-                      setTemplates((v) => [
-                        ...v,
-                        {
-                          id: crypto.randomUUID(),
-                          name: templateName.trim(),
-                          description: `${m.properties.length} 项属性 · 来源 ${m.name}`,
-                          values: Object.fromEntries(
-                            m.properties.map((p) => [
-                              p.name,
-                              draft[keyOf(m.id, p.name)]?.newValue ?? p.value,
-                            ]),
-                          ),
-                        },
-                      ])
-                      setModal(null)
-                      setNotice({ text: '属性模板已保存在本地。' })
-                    }}
-                  >
-                    保存模板
                   </button>
                 </div>
               </>

@@ -83,7 +83,7 @@ export interface Bridge {
   local(method: string, params?: unknown): Promise<unknown>
   chooseExport?: (...args: unknown[]) => Promise<unknown>
 }
-export type Page = 'workspace' | 'templates' | 'history' | 'connections' | 'settings'
+export type Page = 'workspace' | 'history' | 'connections'
 export interface Operation {
   id: string
   time: string
@@ -101,10 +101,4 @@ export interface Operation {
     saved: boolean | null
     message: string
   }[]
-}
-export interface Template {
-  id: string
-  name: string
-  description: string
-  values: Record<string, string>
 }
