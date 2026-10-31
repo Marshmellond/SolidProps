@@ -623,8 +623,6 @@ export default function App() {
                 ? `${draftConflicts} 项草稿冲突，暂不能提交`
                 : `${new Set(changes.map((c) => c.modelId)).size} 个文件 · ${changes.length} 项变更 · ${editing && draftSignature(draft) !== savedSignature ? '编辑未保存' : draftSaved ? '已保存待提交' : '无待提交变更'}`
               : ''}
-            <i />
-            CadWeave 0.1
           </span>
         </footer>
       </div>
@@ -688,13 +686,6 @@ export default function App() {
             </div>
             {modal === 'preview' && (
               <>
-                <div className="submit-warning">
-                  <Info size={16} />
-                  <span>提交后将写入 SolidWorks 文件。</span>
-                </div>
-                <div className="preview-snapshot">
-                  快照 ID <code>{snap?.id}</code>
-                </div>
                 <div className="preview-table">
                   <table>
                     <thead>

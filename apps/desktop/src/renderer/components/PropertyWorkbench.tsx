@@ -29,7 +29,10 @@ export function PropertyWorkbench(props: Props) {
     needsRefresh,
     capabilities,
   } = props
-  const models = snapshot.models.filter((m) => selected.has(m.id))
+  const models = useMemo(
+    () => snapshot.models.filter((m) => selected.has(m.id)),
+    [snapshot.models, selected],
+  )
   const rows = useMemo(() => aggregatePropertyRows(models, draft), [snapshot, selected, draft])
   const [query, setQuery] = useState('')
   const [valueTouched, setValueTouched] = useState(false)
@@ -165,14 +168,14 @@ export function PropertyWorkbench(props: Props) {
       <section className="property-panel">
         <div className="property-panel-heading">
           <div>
-            <h2>
+            <h2 title={models.length === 1 ? models[0].path : undefined}>
               {models.length === 1
                 ? models[0].name
                 : models.length
                   ? `已选 ${models.length} 个文件`
                   : '文档属性'}
             </h2>
-            {models.length === 1 && <p title={models[0].path}>{models[0].path}</p>}
+
             {models.length > 1 && (
               <details>
                 <summary>查看选中文件</summary>
@@ -312,7 +315,7 @@ export function PropertyWorkbench(props: Props) {
                   <th>属性名称</th>
                   <th>属性值</th>
                   {models.length > 1 && <th className="coverage-col">存在于</th>}
-                  <th className="property-change-col">本地变更</th>
+                  <th className="property-change-col">状态</th>
                 </tr>
               </thead>
               <tbody>
@@ -372,18 +375,23 @@ export function PropertyWorkbench(props: Props) {
                             name={row.name}
                             resetKey={`${snapshot.id}-${selectionKey}-${editing}`}
                           />
-                        ) : (
+                        ) : writable && !deleted ? (
                           <button
                             className={`aggregate-value ${row.mixed ? 'mixed-value' : ''}`}
-                            disabled={!writable || deleted}
                             onClick={() => openUpdate(row.name)}
+                          >
+                            {row.mixed ? '多个不同值' : row.value || '（空）'}
+                          </button>
+                        ) : (
+                          <span
+                            className={`property-display-value ${row.mixed ? 'mixed-value' : ''}`}
                           >
                             {deleted
                               ? '（待删除）'
                               : row.mixed
                                 ? '多个不同值'
                                 : row.value || '（空）'}
-                          </button>
+                          </span>
                         )}
                       </td>
                       {models.length > 1 && (
@@ -394,12 +402,20 @@ export function PropertyWorkbench(props: Props) {
                       <td className="property-change-col">
                         {pending.length ? (
                           <>
-                            <span>
-                              {pending.some((c) => c.operation === 'add') ? '待新增 ' : ''}
-                              {pending.some((c) => !c.operation || c.operation === 'update')
-                                ? '待修改 '
-                                : ''}
-                              {pending.some((c) => c.operation === 'delete') ? '待删除' : ''}
+                            <span
+                              title={[
+                                ...new Set(
+                                  pending.map((c) =>
+                                    c.operation === 'add'
+                                      ? '新增'
+                                      : c.operation === 'delete'
+                                        ? '删除'
+                                        : '修改',
+                                  ),
+                                ),
+                              ].join('、')}
+                            >
+                              待提交
                             </span>
                             <button
                               title="撤销此属性的本地修改"
@@ -420,7 +436,7 @@ export function PropertyWorkbench(props: Props) {
           )}
           {models.length > 0 && !visibleRows.length && (
             <div className="property-empty">
-              {rows.length ? '没有符合查询条件的属性。' : '暂无文档属性，进入编辑后可新增。'}
+              {rows.length ? '没有符合查询条件的属性。' : '暂无文档属性'}
             </div>
           )}
           {adding && (
@@ -444,11 +460,9 @@ export function PropertyWorkbench(props: Props) {
                   onChange={(e) => setNewValue(e.target.value)}
                 />
               </label>
-              <p>
-                {addPreview
-                  ? `预计新增 ${addPreview.affected} 项，跳过 ${addPreview.skipped} 项。${addPreview.reasons.join('；')}`
-                  : '已有同名属性不覆盖，仅新增普通文本属性。'}
-              </p>
+              {addPreview && (
+                <p>{`预计新增 ${addPreview.affected} 项，跳过 ${addPreview.skipped} 项。${addPreview.reasons.join('；')}`}</p>
+              )}
               <div>
                 <button className="button" onClick={() => setAdding(false)}>
                   取消
@@ -492,7 +506,6 @@ export function PropertyWorkbench(props: Props) {
               </button>
             </div>
             <div className="modal-fields">
-              <p>作用于 {models.length} 个选中文件</p>
               {action.operation === 'update' ? (
                 <>
                   <label>
@@ -562,12 +575,11 @@ export function PropertyWorkbench(props: Props) {
                   </fieldset>
                 </>
               ) : (
-                <p>将删除：{action.names.join('、')}。缺少属性的文件跳过，待新增项直接撤销。</p>
+                <p>删除：{action.names.join('、')}</p>
               )}
               <div className="operation-preview">
                 预计处理 {preview?.affected ?? 0} 项，跳过 {preview?.skipped ?? 0} 项。
                 <p>{preview?.reasons.join('；')}</p>
-                <small>仅暂存本地变更，保存后仍需提交才写入 CAD。</small>
               </div>
             </div>
             <div className="modal-footer">
@@ -688,11 +700,16 @@ function SingleValue({
 }) {
   const [text, setText] = useState(value)
   useEffect(() => setText(value), [value, resetKey])
+  if (disabled)
+    return (
+      <span className="property-display-value" aria-label={`属性值 ${name}`}>
+        {value || '（空）'}
+      </span>
+    )
   return (
     <input
       className="single-property-value"
       aria-label={`属性值 ${name}`}
-      readOnly={disabled}
       value={text}
       onChange={(e) => {
         setText(e.target.value)

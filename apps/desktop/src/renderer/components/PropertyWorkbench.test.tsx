@@ -72,7 +72,8 @@ describe('selected-file longitudinal workbench', () => {
     const html = render(['b'])
     expect(html).toContain('属性值 材料')
     expect(html).not.toContain('属性值 供应商')
-    expect(html).toContain('readOnly=""')
+    expect(html).toContain('class="property-display-value"')
+    expect(html).not.toContain('class="single-property-value"')
     expect(html).toMatch(/disabled=""[^>]*><svg[^]*?新增属性/)
   })
   it('enables single-file editing only in edit mode', () => {
@@ -107,6 +108,8 @@ describe('selected-file longitudinal workbench', () => {
     }
     expect(render(['b'], false, draft)).not.toContain('属性值 新属性')
     expect(render(['a'], false, draft)).toContain('待删除')
-    expect(render(['a'], false, draft)).toContain('待新增')
+    expect(render(['a'], false, draft)).toContain('待提交')
+    expect(render(['a'], false, draft)).not.toContain('待修改')
+    expect(render(['a'], false, draft)).not.toContain('待新增')
   })
 })

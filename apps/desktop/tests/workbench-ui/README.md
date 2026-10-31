@@ -29,7 +29,12 @@ No dependencies are added. The suite uses the installed `@playwright/test` Elect
 
 ## Coverage
 
-1. Connect into the default unique-file sidebar; root and duplicate-reference badge; view-only property inputs/actions before explicit editing; multiple file checkbox selection unlocks bulk editing only after entering edit mode; file and property queries retain selection; no matrix/results panel.
+5. View-only double-click never opens or focuses an editor; single and aggregate editable controls have visible borders before focus. Pending states use 待提交, with operation types in titles.
+6. Ten continuous file/structure roundtrips exercise full-width tab edge hit targets, independent search strings, single-occurrence focus, and file selection.
+7. Batch property union contains selected files only; common-only excludes partial coverage and query does not silently add unselected properties.
+
+
+1. Connect into the default unique-file sidebar; root and duplicate-reference badge; plain-text property values and disabled actions before explicit editing; multiple file checkbox selection unlocks bulk editing only after entering edit mode; file and property queries retain selection; no matrix/results panel.
 2. Missing-property default skips absent files; explicit fill adds absent property; save gates submit; preview alone never applies; confirm captures exact update/add payload and snapshot ID; mock success refreshes and clears pending submission.
 3. Mixed-value blank default cannot accidentally clear values; explicit clear stages empty values; saved draft remains local. Structure navigation locates a repeated part but highlights only the clicked occurrence; switching back preserves exactly one underlying file selection.
 4. Explicit bulk add skips existing properties and adds only the missing one. Delete withdraws a pending add and marks existing properties for deletion. Cancel confirmation restores the saved draft. Deleting with a genuinely missing property skips that file; saved delete entries contain only the two existing properties, with no apply call.

@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import type { Model, Snapshot } from '../types'
 import { AssemblyTree } from './AssemblyTree'
 
@@ -81,21 +81,56 @@ export function FileSidebar({
   disabled = false,
 }: FileSidebarProps) {
   const [view, setView] = useState<'files' | 'structure'>('files')
-  const [query, setQuery] = useState('')
+  const [fileQuery, setFileQuery] = useState('')
+  const [structureQuery, setStructureQuery] = useState('')
   const [focusedOccurrence, setFocusedOccurrence] = useState<string | null>(null)
   const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(new Set())
   const id = useId()
-  const entries = buildFileSidebarEntries(snapshot)
-  const visible = filterFileSidebarEntries(entries, query)
-  const visibleIds = new Set(visible.map(({ model }) => model.id))
-  const hiddenIds = entries
-    .filter(({ model }) => selected.has(model.id) && !visibleIds.has(model.id))
-    .map(({ model }) => model.id)
-  const selectedCount = entries.filter(({ model }) => selected.has(model.id)).length
-  const visibleSelectedCount = visible.filter(({ model }) => selected.has(model.id)).length
+  const entries = useMemo(() => buildFileSidebarEntries(snapshot), [snapshot])
+  const modelIds = useMemo(() => new Set(entries.map(({ model }) => model.id)), [entries])
+  const occurrenceModels = useMemo(() => {
+    const models = new Map<string, string | null>()
+    const visit = (node: Snapshot['root']) => {
+      models.set(node.id, node.modelId)
+      node.children.forEach(visit)
+    }
+    visit(snapshot.root)
+    return models
+  }, [snapshot.root])
+  const visible = useMemo(() => filterFileSidebarEntries(entries, fileQuery), [entries, fileQuery])
+  const visibleIds = useMemo(() => new Set(visible.map(({ model }) => model.id)), [visible])
+  const hiddenIds = useMemo(
+    () =>
+      entries
+        .filter(({ model }) => selected.has(model.id) && !visibleIds.has(model.id))
+        .map(({ model }) => model.id),
+    [entries, selected, visibleIds],
+  )
+  const selectedCount = useMemo(
+    () => entries.filter(({ model }) => selected.has(model.id)).length,
+    [entries, selected],
+  )
+  const visibleSelectedCount = useMemo(
+    () => visible.filter(({ model }) => selected.has(model.id)).length,
+    [visible, selected],
+  )
   const allVisibleSelected = visible.length > 0 && visibleSelectedCount === visible.length
   const focusedModelId = selected.size === 1 ? [...selected][0] : null
-  const focusedEntry = entries.find(({ model }) => model.id === focusedModelId)
+  const validFocusedOccurrence =
+    focusedOccurrence !== null &&
+    focusedModelId !== null &&
+    modelIds.has(focusedModelId) &&
+    occurrenceModels.get(focusedOccurrence) === focusedModelId
+      ? focusedOccurrence
+      : null
+  // A file selection or refreshed snapshot must not retain an unrelated occurrence highlight.
+  useEffect(() => {
+    if (focusedOccurrence !== validFocusedOccurrence) setFocusedOccurrence(null)
+  }, [focusedOccurrence, validFocusedOccurrence])
+  const changeFileSelection = (next: Set<string>) => {
+    setFocusedOccurrence(null)
+    onSelectionChange(next)
+  }
 
   return (
     <aside className="file-sidebar" aria-label="模型文件与装配结构">
@@ -109,7 +144,6 @@ export function FileSidebar({
             aria-controls={`${id}-panel`}
             aria-selected={view === tab}
             className={`file-sidebar-tab${view === tab ? ' file-sidebar-tab-active' : ''}`}
-            disabled={disabled}
             onClick={() => setView(tab)}
           >
             {tab === 'files' ? '文件' : '装配结构'}
@@ -124,9 +158,10 @@ export function FileSidebar({
           type="search"
           aria-label={view === 'files' ? '搜索文件名或路径' : '搜索装配结构'}
           placeholder={view === 'files' ? '搜索文件名或路径' : '搜索装配结构'}
-          value={query}
-          disabled={disabled}
-          onChange={(event) => setQuery(event.target.value)}
+          value={view === 'files' ? fileQuery : structureQuery}
+          onChange={(event) =>
+            (view === 'files' ? setFileQuery : setStructureQuery)(event.target.value)
+          }
         />
       </label>
       <div
@@ -151,7 +186,7 @@ export function FileSidebar({
                   checked={allVisibleSelected}
                   disabled={disabled || visible.length === 0}
                   onChange={(event) =>
-                    onSelectionChange(
+                    changeFileSelection(
                       setFileSidebarSelection(selected, visibleIds, event.target.checked),
                     )
                   }
@@ -161,7 +196,7 @@ export function FileSidebar({
               <button
                 type="button"
                 disabled={disabled || selected.size === 0}
-                onClick={() => onSelectionChange(new Set())}
+                onClick={() => changeFileSelection(new Set())}
               >
                 清空选择
               </button>
@@ -177,7 +212,7 @@ export function FileSidebar({
                   disabled={disabled}
                   aria-label={`清除 ${hiddenIds.length} 个隐藏文件的选择`}
                   onClick={() =>
-                    onSelectionChange(setFileSidebarSelection(selected, hiddenIds, false))
+                    changeFileSelection(setFileSidebarSelection(selected, hiddenIds, false))
                   }
                 >
                   清除隐藏选择
@@ -196,7 +231,7 @@ export function FileSidebar({
                     checked={selected.has(model.id)}
                     disabled={disabled}
                     onChange={(event) =>
-                      onSelectionChange(
+                      changeFileSelection(
                         setFileSidebarSelection(selected, [model.id], event.target.checked),
                       )
                     }
@@ -207,7 +242,7 @@ export function FileSidebar({
                     title={model.path}
                     aria-label={`仅选择文件 ${model.name}（${model.path}）`}
                     disabled={disabled}
-                    onClick={() => onSelectionChange(new Set([model.id]))}
+                    onClick={() => changeFileSelection(new Set([model.id]))}
                   >
                     <span className="file-sidebar-name">{model.name}</span>
                     {duplicateName && (
@@ -226,8 +261,8 @@ export function FileSidebar({
                   {dirtyModelIds?.has(model.id) && (
                     <span
                       className="file-sidebar-dirty"
-                      title="有未应用修改"
-                      aria-label="有未应用修改"
+                      title="有待提交变更"
+                      aria-label="有待提交变更"
                     >
                       ●
                     </span>
@@ -243,20 +278,12 @@ export function FileSidebar({
           </>
         ) : (
           <>
-            <p className="file-sidebar-structure-note">
-              点击实例可定位文件；批量选择请切换到“文件”。
-            </p>
-            {focusedEntry && focusedEntry.referenceCount > 1 && (
-              <p className="file-sidebar-reference-note" role="status">
-                所选文件被引用 {focusedEntry.referenceCount} 次；各实例共享同一文件属性。
-              </p>
-            )}
             <fieldset className="file-sidebar-tree" disabled={disabled} aria-label="装配结构定位">
               <AssemblyTree
                 root={snapshot.root}
-                query={query.trim()}
+                query={structureQuery.trim()}
                 focusedModelId={focusedModelId}
-                focusedOccurrenceId={focusedOccurrence}
+                focusedOccurrenceId={validFocusedOccurrence}
                 collapsedIds={collapsedIds}
                 onToggle={(occurrenceId) => {
                   if (!disabled)
@@ -269,12 +296,7 @@ export function FileSidebar({
                     )
                 }}
                 onLocate={(modelId, occurrenceId) => {
-                  if (
-                    disabled ||
-                    modelId === null ||
-                    !entries.some(({ model }) => model.id === modelId)
-                  )
-                    return
+                  if (disabled || modelId === null || !modelIds.has(modelId)) return
                   setFocusedOccurrence(occurrenceId ?? null)
                   onSelectionChange(new Set([modelId]))
                 }}
