@@ -1,7 +1,7 @@
 [project]
 name = "cadweave-worker"
 version = "0.1.0"
-description = "Attach-only, safety-first CadWeave CAD stdio worker"
+description = "Attach-only, safety-first SolidProps CAD stdio worker"
 requires-python = ">=3.11"
 dependencies = ["psutil>=6.1,<8", "pywin32>=308; sys_platform == 'win32'"]
 

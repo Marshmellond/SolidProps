@@ -4,6 +4,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { WorkerClient } from "./worker-client";
 import { StorageClient, LOCAL_METHODS } from "./storage-client";
 
+app.setName("SolidProps");
+
 let window: BrowserWindow | null = null;
 let worker: WorkerClient;
 let auditBusy = false;
@@ -20,7 +22,7 @@ function createWindow(): void {
     title: "SolidProps · SolidWorks 文档属性",
     backgroundColor: "#F4F5F7",
     frame: false,
-    icon: join(__dirname, '../../resources/icons/cadweave.ico'),
+    icon: join(__dirname, '../../resources/icons/solidprops.ico'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -60,7 +62,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  app.setAppUserModelId("com.cadweave.desktop");
+  app.setAppUserModelId("com.solidprops.desktop");
   const logDirectory = join(app.getPath("userData"), "logs");
   mkdirSync(logDirectory, { recursive: true });
   const log = (text: string): void => {
@@ -93,7 +95,7 @@ app.whenReady().then(() => {
     packaged ? join(process.resourcesPath, "cad-worker/cad-worker.exe") : join(workerRoot, ".venv/Scripts/python.exe"),
     packaged ? [] : ["-m", "cad_worker"],
     packaged ? process.resourcesPath : workerRoot,
-    join(app.getPath("userData"), "cadweave.sqlite3"),
+    join(app.getPath("userData"), "solidprops.sqlite3"),
   );
   ipcMain.handle("local:request", (event, method: unknown, params: unknown) => {
     if (event.sender !== window?.webContents) throw new Error("未授权窗口");

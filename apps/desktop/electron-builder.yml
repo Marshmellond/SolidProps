@@ -1,6 +1,6 @@
-appId: com.cadweave.desktop
-productName: CadWeave
-copyright: Copyright © CadWeave
+appId: com.solidprops.desktop
+productName: SolidProps
+copyright: Copyright © SolidProps
 asar: true
 directories:
   output: ../../artifacts/desktop
@@ -12,15 +12,16 @@ extraResources:
   - from: ../../artifacts/worker/cad-worker
     to: cad-worker
 win:
-  icon: resources/icons/cadweave.ico
+  icon: resources/icons/solidprops.ico
   target:
     - target: nsis
       arch: [x64]
-  signExecutable: false
 nsis:
+  include: build/installer.nsh
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: CadWeave
-artifactName: CadWeave-Setup-${version}-${arch}.${ext}
+  shortcutName: SolidProps
+  packElevateHelper: false
+artifactName: SolidProps-Setup-${version}-${arch}.${ext}

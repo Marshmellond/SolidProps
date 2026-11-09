@@ -14,6 +14,6 @@ for x, y in points:
     draw.ellipse((x-24, y-24, x+24, y+24), fill='white')
 draw.rounded_rectangle((260, 230, 426, 277), radius=13, fill='white')
 draw.rounded_rectangle((375, 207, 425, 318), radius=13, fill='white')
-image.save(root / 'cadweave.png')
-image.save(root / 'cadweave.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+image.save(root / 'solidprops.png')
+image.save(root / 'solidprops.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
 print(root)

@@ -1,15 +1,34 @@
 """SolidWorks active-document reader and fail-closed write coordinator.
 
-Production writes are gated by exact validated revision (34.0.0 only).
+Production writes are gated by an explicit certified-revision allowlist.
 Certification used an isolated copied part; source CAD files were not modified.
 """
 from pathlib import Path
 from uuid import uuid4
 import hashlib
+import re
 import shutil
 import threading
 from .contracts import WorkerError, capabilities, result
 from . import discovery
+
+# ICustomPropertyManager.Get6 is available from SolidWorks 2018 (revision 26).
+MIN_READ_REVISION = (26, 0, 0)
+CERTIFIED_WRITE_REVISIONS = {(34, 0, 0)}
+
+
+def parse_revision(value):
+    """Extract major/minor/patch robustly from RevisionNumber variants."""
+    match = re.match(r'^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?', str(value or ''))
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def read_supported(value):
+    """Unknown revisions are attempted; confirmed pre-2018 revisions are rejected."""
+    parsed = parse_revision(value)
+    return parsed is None or parsed >= MIN_READ_REVISION
 
 
 def invoke(obj, name, *args):
@@ -54,8 +73,14 @@ class ComBridge:
         return dict(name=name, value=raw, evaluated=evaluated, valueType='text' if value_type == 30 else 'other', linked=linked, resolved=bool(resolved))
 
     def certify(self, revision):
-        self.write_certified = revision == '34.0.0'
-        self.write_reason = ('仅 SolidWorks 34.0.0 的document作用域普通文本可分文档写回；Save3绑定已在副本认证，新增/删除仅经fake COM测试，生产未重开验证。' if self.write_certified else '当前 SolidWorks revision 未认证 Save3 COM 出参绑定，真实写回禁用。')
+        parsed = parse_revision(revision)
+        self.write_certified = parsed in CERTIFIED_WRITE_REVISIONS
+        label = str(revision or '版本未知')
+        self.write_reason = (
+            'SolidWorks 34.0.0：可读取并写回既有普通文本属性；新增/删除尚未完成实机认证。'
+            if self.write_certified
+            else f'SolidWorks {label}：仅可读取；写回仅认证 34.0.0。'
+        )
 
     def save(self, document):
         if not self.write_certified:
@@ -77,7 +102,7 @@ class SolidWorksAdapter:
         self.bridge = bridge or ComBridge()
         self.inventory = inventory or discovery.processes
         self.thread = threading.get_ident()
-        self.backup_root = backup_root or Path.home() / 'CadWeave' / 'backups'
+        self.backup_root = backup_root or Path.home() / 'SolidProps' / 'backups'
         self._check_process()
         self.app = self.bridge.attach()
         self._check_process()
@@ -90,6 +115,11 @@ class SolidWorksAdapter:
         except Exception:
             pass
         if production_bridge:
+            if not read_supported(self.session.get('version')):
+                raise WorkerError(
+                    'UNSUPPORTED_VERSION',
+                    f'SolidWorks {self.session.get("version")} 低于最低支持版本 2018（26.0.0），无法读取自定义属性。',
+                )
             self.bridge.certify(self.session['version'])
         self.capabilities = capabilities(self.bridge.write_certified, notes=self.bridge.write_reason)
         self.doc = None

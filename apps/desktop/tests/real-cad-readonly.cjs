@@ -83,26 +83,32 @@ function request(method, params = {}, timeoutMs = 30000) {
       }))
       return
     }
-    await request('connect', { sessionId: session.id })
+    const connected = await request('connect', { sessionId: session.id })
     const snapshot = await request('snapshot', { scope: 'document' })
     if (!snapshot || !Array.isArray(snapshot.models)) throw Error('snapshot did not return models')
     if (!snapshot.models.length) throw Error('snapshot returned zero models')
+    let propertyCount = 0
     for (const model of snapshot.models) {
       if (typeof model.id !== 'string' || typeof model.name !== 'string') throw Error(`Invalid model: ${JSON.stringify(model)}`)
       if (!Array.isArray(model.properties)) throw Error(`Model ${model.name} has no properties array`)
+      propertyCount += model.properties.length
       for (const property of model.properties) {
         if (typeof property.name !== 'string' || typeof property.value !== 'string') {
           throw Error(`Invalid property on ${model.name}: ${JSON.stringify(property)}`)
         }
       }
     }
+    if (propertyCount === 0) {
+      throw Error('Connected but read 0 properties; this usually means the SolidWorks version lacks ICustomPropertyManager.Get6 (pre-2018) or the API shape changed')
+    }
     await request('disconnect')
     console.log('REAL_CAD_READONLY_PASS', JSON.stringify({
       session: session.label,
-      version: session.version,
+      version: connected.session?.version,
+      writeCertified: connected.capabilities?.writable,
       title: snapshot.title,
       models: snapshot.models.length,
-      properties: snapshot.models.reduce((total, model) => total + model.properties.length, 0),
+      properties: propertyCount,
       diagnostics: discovered.diagnostics?.length ?? 0,
       realCadWrites: 0,
     }))

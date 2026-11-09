@@ -730,6 +730,11 @@ a {
   border-color: #f4d7db;
   color: #b72132;
 }
+.notice.compat {
+  background: #fff8e6;
+  border-color: #f0dfb8;
+  color: #7a5b13;
+}
 .notice > span {
   flex: 1;
 }

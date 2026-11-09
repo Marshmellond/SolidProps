@@ -6,7 +6,7 @@ const path = require('node:path')
 const test = base.extend({
   harness: async ({}, use) => {
     const renderer = path.resolve(__dirname, '../../out/renderer/index.html')
-    await fs.access(renderer).catch(() => { throw new Error('Build renderer first: pnpm --filter @cadweave/desktop build') })
+    await fs.access(renderer).catch(() => { throw new Error('Build renderer first: pnpm --filter @solidprops/desktop build') })
     const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cadweave-workbench-ui-'))
     const env = { ...process.env, CADWEAVE_FIXTURE_USER_DATA: path.join(temporaryRoot, 'user-data') }
     delete env.ELECTRON_RUN_AS_NODE

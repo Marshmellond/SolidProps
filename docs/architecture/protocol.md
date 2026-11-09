@@ -1,4 +1,4 @@
-# CadWeave Worker 协议 v1
+# SolidProps Worker 协议 v1
 
 Electron 主进程通过 stdio 启动 Worker；每行一条 UTF-8 JSON。stdout 仅协议，日志写 stderr。所有 CAD 调用在 Worker 主线程串行执行。渲染层不持有 SDK 对象。
 

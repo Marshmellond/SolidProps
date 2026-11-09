@@ -28,6 +28,7 @@ import { PropertyWorkbench } from './components/PropertyWorkbench'
 import { ConnectionPage } from './components/ConnectionPage'
 import { EditActions } from './components/EditActions'
 import { AssemblyTree } from './components/AssemblyTree'
+import { CompatibilityNotice } from './components/CompatibilityNotice'
 import { draftKey, draftEntries, draftSignature, restoreDraft, type SavedDraft } from './drafts'
 
 async function local<T>(method: string, params: unknown = {}): Promise<T> {
@@ -426,6 +427,7 @@ export default function App() {
             </div>
           </div>
         </header>
+        <CompatibilityNotice session={session} capabilities={cap} />
         {notice && (
           <div className={`notice ${notice.error ? 'error' : ''}`} role="status">
             <Info size={15} />

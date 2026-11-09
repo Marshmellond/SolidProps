@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace as NS
 import pytest
-from cad_worker.solidworks import SolidWorksAdapter, ComBridge, invoke
+from cad_worker.solidworks import SolidWorksAdapter, ComBridge, invoke, parse_revision, read_supported
 from cad_worker.contracts import WorkerError
 
 
@@ -190,11 +190,40 @@ def test_child_models_dedup_and_unloaded_occurrences(setup):
     assert all(not p['writable'] for p in snap['models'][1]['properties'])
 
 
-@pytest.mark.parametrize('revision,expected', [('34.0.0', True), ('34.0.1', False), ('33.0.0', False), ('unknown', False)])
-def test_production_revision_certification_exact(revision, expected):
+@pytest.mark.parametrize('revision,expected', [
+    ('34.0.0', True),
+    (' 34.0.0 ', True),
+    ('34.0.0.123', True),
+    ('34.0.1', False),
+    ('33.0.0', False),
+    ('unknown', False),
+])
+def test_production_revision_certification_allowlist(revision, expected):
     bridge = ComBridge()
     bridge.certify(revision)
     assert bridge.write_certified is expected
+
+
+@pytest.mark.parametrize('revision,expected', [
+    ('25.0.0', False),
+    ('26.0.0', True),
+    ('34.0.0.123', True),
+    ('unknown', True),
+    ('', True),
+])
+def test_read_floor_accepts_2018_and_rejects_older(revision, expected):
+    assert read_supported(revision) is expected
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('34.0.0', (34, 0, 0)),
+    ('34.0.0.123', (34, 0, 0)),
+    (' 33.2 ', (33, 2, 0)),
+    ('34', (34, 0, 0)),
+    ('unknown', None),
+])
+def test_revision_parsing_tolerates_build_suffix(raw, expected):
+    assert parse_revision(raw) == expected
 
 
 def test_dynamic_com_property_not_called_as_default_method():

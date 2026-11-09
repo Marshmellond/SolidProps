@@ -1,21 +1,21 @@
 {
-  "name": "cadweave",
+  "name": "solidprops",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.12.1",
   "scripts": {
     "dev": "node scripts/dev.cjs",
-    "build": "pnpm --filter @cadweave/desktop build",
-    "typecheck": "pnpm --filter @cadweave/desktop typecheck",
-    "test": "pnpm --filter @cadweave/desktop test",
-    "package:win": "pnpm --filter @cadweave/desktop package:win",
+    "build": "pnpm --filter @solidprops/desktop build",
+    "typecheck": "pnpm --filter @solidprops/desktop typecheck",
+    "test": "pnpm --filter @solidprops/desktop test",
+    "package:win": "pnpm --filter @solidprops/desktop package:win",
     "test:worker": "uv run --project workers/cad-python pytest workers/cad-python/tests",
-    "test:e2e": "pnpm --filter @cadweave/desktop exec playwright test --config tests/workbench-ui/playwright.config.cjs",
-    "test:cad": "pnpm --filter @cadweave/desktop exec node tests/real-cad-readonly.cjs",
+    "test:e2e": "pnpm --filter @solidprops/desktop exec playwright test --config tests/workbench-ui/playwright.config.cjs",
+    "test:cad": "pnpm --filter @solidprops/desktop exec node tests/real-cad-readonly.cjs",
     "test:system": "pwsh -NoProfile -File scripts/test-system.ps1",
-    "test:desktop": "pnpm --filter @cadweave/desktop exec node tests/electron-smoke.cjs",
-    "test:ui": "pnpm --filter @cadweave/desktop exec node tests/ui-interactions.cjs",
+    "test:desktop": "pnpm --filter @solidprops/desktop exec node tests/electron-smoke.cjs",
+    "test:ui": "pnpm --filter @solidprops/desktop exec node tests/ui-interactions.cjs",
     "start": "node scripts/launch-desktop.cjs",
-    "format": "pnpm --filter @cadweave/desktop exec prettier --write src electron.vite.config.ts tests/*.ts"
+    "format": "pnpm --filter @solidprops/desktop exec prettier --write src electron.vite.config.ts tests/*.ts"
   }
 }

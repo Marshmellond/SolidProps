@@ -37,9 +37,9 @@
 
 所有 COM 运行在 Worker 主线程 STA 串行路径。发现多实例立即拒绝；请求中复核进程创建时间、PID、ROT 对象 PID、活动 COM 文档身份、路径和配置。只读读取 Get6 采用缓存避免激活配置/重建；缓存过期会提示，读取失败不捏造原值。
 
-apply 整批校验后才可能写：必须当前快照、旧值相符、既有未链接文本、模型/属性可写、非 dirty、非只读、显式 confirmSave。快照消耗防重放；请求 ID 也防重复。新快照尝试即废旧快照。备份默认用户目录 CadWeave/backups/UUID，唯一目录、copy2 后 hash 核对；备份失败不修改。逐属性结果报告，遇 Set2/内存回读失败不保存后项；开始 Set2 即锁定不确定状态，只有明确 Save 成功解锁。保存失败后禁止该连接后续自动保存，即使 COM 异常报告 dirty=false。
+apply 整批校验后才可能写：必须当前快照、旧值相符、既有未链接文本、模型/属性可写、非 dirty、非只读、显式 confirmSave。快照消耗防重放；请求 ID 也防重复。新快照尝试即废旧快照。备份默认用户目录 SolidProps/backups/UUID，唯一目录、copy2 后 hash 核对；备份失败不修改。逐属性结果报告，遇 Set2/内存回读失败不保存后项；开始 Set2 即锁定不确定状态，只有明确 Save 成功解锁。保存失败后禁止该连接后续自动保存，即使 COM 异常报告 dirty=false。
 
-假 COM 写路径测试不等于真实 CAD 认证。生产 ComBridge 默认 write_certified=False，仅实际连接 RevisionNumber 精确 `34.0.0` 时开启；未知/其他版本能力、属性、模型全部只读，用户无法从协议参数绕过。该版本已在独立副本验证 Set2 状态、Save3 bool+errors/warnings、关闭重开值；未把用户 dirty 原模型用于测试。未来其他版本仍须独立认证。生产 apply 始终 `verified:false`，因为并不关闭重开用户模型。
+假 COM 写路径测试不等于真实 CAD 认证。生产 ComBridge 默认 write_certified=False，仅实际连接 RevisionNumber 归一化后命中认证白名单（当前 `34.0.0`，允许 `34.0.0.x` 构建后缀）时开启；2018（revision `26.0.0`）以下在连接阶段直接拒绝，2018–2025 及其他未认证补丁版本能力、属性、模型全部只读，并在界面显示版本与只读原因，用户无法从协议参数绕过。该版本已在独立副本验证 Set2 状态、Save3 bool+errors/warnings、关闭重开值；未把用户 dirty 原模型用于测试。未来其他版本仍须独立认证。生产 apply 始终 `verified:false`，因为并不关闭重开用户模型。
 
 没有多文档事务保证、生产重开验证、PDM 锁定/签出集成或外部进程并发修改事务。外部 CAD 用户仍可能在最后复核与 COM 调用间操作，本 Worker 尽力缩小窗口但不声称原子性。根/子模型按规范化文件路径统一去重、私有 COM 映射持有，逐次核对 GetOpenDocumentByName 身份和路径；仅 document 作用域写回，configuration 只读。全批目标预检与全批备份均在第一项 Set2 前完成；每文件组保存，组失败停止后续组，前组已保存不伪装回滚。开发 checkout 原始测试目录硬保护禁止写回，冻结产品不依赖开发路径。
 

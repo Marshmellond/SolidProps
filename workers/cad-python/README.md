@@ -1,4 +1,4 @@
-# CadWeave Python worker
+# SolidProps Python worker
 
 协议以仓库 `docs/architecture/protocol.md` 为准：UTF-8 NDJSON，camelCase，stdout 只有协议响应，stderr 诊断。真实 COM 在主线程 STA 串行运行，不启动 CAD。
 
@@ -21,6 +21,6 @@ uv run --no-sync pytest
 
 ## 安全
 
-apply要求当前Worker持有快照、明确confirmSave:true；新快照/断开/连接/任何已进入写阶段的apply使旧快照失效；拒绝重复请求、重复属性、未知模型属性、原值冲突、只读和dirty。整个批次先验证再修改。真实备份默认 `~/CadWeave/backups/<uuid>/`，备份失败不得Set2。没有CAD多文档事务保证。真实保存结果 `verified:false`：没有重开验证。测试只写pytest临时目录的合成字节和假COM，绝不写用户原模型。
+apply要求当前Worker持有快照、明确confirmSave:true；新快照/断开/连接/任何已进入写阶段的apply使旧快照失效；拒绝重复请求、重复属性、未知模型属性、原值冲突、只读和dirty。整个批次先验证再修改。真实备份默认 `~/SolidProps/backups/<uuid>/`，备份失败不得Set2。没有CAD多文档事务保证。真实保存结果 `verified:false`：没有重开验证。测试只写pytest临时目录的合成字节和假COM，绝不写用户原模型。
 
-`probe_readonly.py` 是人工只读诊断，不调用apply/Set2/Save3。`adapters.py` 定义通用 `CadAdapter` 协议及 `CadPlugin` 描述符；`builtin_plugins()` 当前只注册 SolidWorks，发现与 Worker 适配器创建共用注册信息。扩展须显式注册，不自动加载外部插件；未知 `cadId` 拒绝连接。详见兼容性文档与插件扩展约定。
+`probe_readonly.py` 是人工只读诊断，不调用apply/Set2/Save3。当前 Worker 只注册 SolidWorks；未知 `cadId` 拒绝连接。详见兼容性文档。

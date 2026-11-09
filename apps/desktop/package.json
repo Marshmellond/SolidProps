@@ -1,9 +1,10 @@
 {
-  "name": "@cadweave/desktop",
+  "name": "@solidprops/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "CadWeave 模型属性工作台",
-  "author": "CadWeave",
+  "productName": "SolidProps",
+  "description": "SolidProps 模型属性工作台",
+  "author": "SolidProps",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

@@ -1,7 +1,7 @@
 // Deliberately fictional paths: no CAD files are opened by this test harness.
 const property = (name, value) => ({ name, value, evaluated: value, valueType: 'text', writable: true, reason: '' })
 const model = (id, name, properties, kind = 'part') => ({
-  id, name, path: `C:\\CadWeave-Isolated-Fixture\\${name}`, kind,
+  id, name, path: `C:\\SolidProps-Isolated-Fixture\\${name}`, kind,
   configuration: '', scope: 'document', properties, writable: true, dirty: false, reason: '',
 })
 const session = { id: 'mock-session', cadId: 'solidworks', label: 'Mock SolidWorks — isolated UI fixture', version: 'Fixture', connectable: true, detail: 'In-memory bridge; no discovery, COM, or CAD processes.' }

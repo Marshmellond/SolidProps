@@ -3,7 +3,7 @@
 From the repository root, build the renderer and run:
 
 ```powershell
-pnpm --filter @cadweave/desktop build
+pnpm --filter @solidprops/desktop build
 pnpm --dir apps/desktop exec playwright test --config tests/workbench-ui/playwright.config.cjs
 ```
 
