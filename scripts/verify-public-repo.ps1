@@ -7,7 +7,7 @@ try {
     if ($customer.Count -gt 0) {
         throw "Customer test files are tracked: $($customer.Count)"
     }
-    $patterns = @('测试文件/', 'artifacts/', '.local/', 'node_modules/')
+    $patterns = @('artifacts/', '.local/', 'node_modules/')
     $ignoreText = Get-Content -LiteralPath '.gitignore' -Raw
     foreach ($pattern in $patterns) {
         if ($ignoreText -notmatch [regex]::Escape($pattern)) {
@@ -15,10 +15,7 @@ try {
         }
     }
     if (Test-Path -LiteralPath '测试文件') {
-        $modelCount = @(Get-ChildItem -LiteralPath '测试文件' -Recurse -File).Count
-        if ($modelCount -eq 0) { throw 'Customer test directory is unexpectedly empty' }
-        $ignored = git check-ignore --no-index -q -- '测试文件\solidworks\活塞总成\活塞头.SLDPRT'
-        if ($LASTEXITCODE -ne 0) { throw 'Representative customer model is not ignored' }
+        throw 'Customer test directory should not be present in the repository'
     }
     Write-Output "Public repository check passed: tracked=$($tracked.Count), customerFilesTracked=$($customer.Count)"
 } finally {
