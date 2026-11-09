@@ -8,7 +8,7 @@ app.setPath('userData', userData)
 app.setPath('sessionData', path.join(userData, 'session'))
 app.disableHardwareAcceleration()
 const clone = value => JSON.parse(JSON.stringify(value))
-const state = { calls: [], applies: [], drafts: [], snapshot: clone(snapshot) }
+const state = { calls: [], applies: [], drafts: [], snapshot: clone(snapshot), applyError: '', failedProperty: '' }
 // Inspected only through Playwright Electron main-process evaluation, not exposed to renderer.
 globalThis.__workbenchFixture = state
 ipcMain.handle('fixture:cad', (_event, method, params) => {
@@ -18,8 +18,10 @@ ipcMain.handle('fixture:cad', (_event, method, params) => {
   if (method === 'snapshot') return clone(state.snapshot)
   if (method === 'disconnect') return {}
   if (method === 'apply') {
+    if (state.applyError) throw new Error(state.applyError)
     state.applies.push(clone(params))
     for (const change of params.changes) {
+      if (change.propertyName === state.failedProperty) continue
       const model = state.snapshot.models.find(model => model.id === change.modelId)
       const existing = model.properties.find(property => property.name === change.propertyName)
       if (change.operation === 'delete') model.properties = model.properties.filter(property => property !== existing)
@@ -27,7 +29,7 @@ ipcMain.handle('fixture:cad', (_event, method, params) => {
       else model.properties.push({ name: change.propertyName, value: change.newValue, evaluated: change.newValue, writable: true, valueType: 'text', reason: '' })
     }
     state.snapshot.id = `mock-snapshot-${state.applies.length + 1}`
-    return { backupDirectory: '', results: params.changes.map(change => ({ modelId: change.modelId, propertyName: change.propertyName, success: true, saved: true, verified: true, message: 'Mock only; no CAD write' })) }
+    return { backupDirectory: '', results: params.changes.map(change => ({ modelId: change.modelId, propertyName: change.propertyName, success: change.propertyName !== state.failedProperty, saved: change.propertyName !== state.failedProperty, verified: change.propertyName !== state.failedProperty, message: change.propertyName === state.failedProperty ? 'Mock write failure' : 'Mock only; no CAD write' })) }
   }
   throw new Error(`Unexpected CAD fixture method: ${method}`)
 })

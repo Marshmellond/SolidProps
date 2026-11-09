@@ -72,7 +72,11 @@ app.whenReady().then(() => {
   };
   const projectRoot = resolve(__dirname, "../../../..");
   const workerRoot = join(projectRoot, "workers/cad-python");
-  worker = app.isPackaged
+  // Electron can report isPackaged=true while still running an unpackaged app
+  // directory (for example when launched as `electron <appDir>`); process.defaultApp
+  // distinguishes that case from a real installer build.
+  const packaged = app.isPackaged && !process.defaultApp;
+  worker = packaged
     ? new WorkerClient(
         join(process.resourcesPath, "cad-worker/cad-worker.exe"),
         [],
@@ -86,9 +90,9 @@ app.whenReady().then(() => {
         log,
       );
   const storage = new StorageClient(
-    app.isPackaged ? join(process.resourcesPath, "cad-worker/cad-worker.exe") : join(workerRoot, ".venv/Scripts/python.exe"),
-    app.isPackaged ? [] : ["-m", "cad_worker"],
-    app.isPackaged ? process.resourcesPath : workerRoot,
+    packaged ? join(process.resourcesPath, "cad-worker/cad-worker.exe") : join(workerRoot, ".venv/Scripts/python.exe"),
+    packaged ? [] : ["-m", "cad_worker"],
+    packaged ? process.resourcesPath : workerRoot,
     join(app.getPath("userData"), "cadweave.sqlite3"),
   );
   ipcMain.handle("local:request", (event, method: unknown, params: unknown) => {

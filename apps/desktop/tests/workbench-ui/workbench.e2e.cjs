@@ -428,3 +428,113 @@ test('each selected file shows only its own properties; no union, coverage, or c
   await expect(row(page, 'SelectedOnly')).toHaveCount(0)
   expect((await state()).applies).toEqual([])
 })
+
+test('saved draft survives reconnect and restores pending edits', async ({ harness }) => {
+  const { page, state } = harness
+  await selectAndEdit(page, 'PartA.SLDPRT')
+  await row(page, 'Description').locator('input.single-property-value').fill('Draft survives reconnect')
+  await page.getByTestId('save-draft').click()
+  await expect(row(page, 'Description').locator('.property-display-value')).toHaveText('Draft survives reconnect')
+  expect((await state()).drafts.at(-1).entries).toHaveLength(1)
+
+  await page.getByRole('button', { name: '连接', exact: true }).click()
+  await page.getByRole('button', { name: '重新连接', exact: true }).click()
+  await expect(page.getByText('已连接', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'PartA.SLDPRT', exact: true })).toBeVisible()
+  await expect(fileButton(page, 'PartA.SLDPRT')).toHaveAttribute('aria-current', 'true')
+  await expect(row(page, 'Description').locator('.property-display-value')).toHaveText('Draft survives reconnect')
+  await expect(page.getByTestId('submit-changes')).toBeEnabled()
+  expect((await state()).applies).toEqual([])
+})
+
+test('submit preview cancel and delete cancel leave the model untouched', async ({ harness }) => {
+  const { page, state } = harness
+  await selectAndEdit(page, 'PartA.SLDPRT')
+  await row(page, 'Material').locator('input.single-property-value').fill('Aluminum')
+  await page.getByTestId('save-draft').click()
+  await page.getByTestId('submit-changes').click()
+  const preview = page.getByRole('dialog', { name: '提交属性修改', exact: true })
+  await expect(preview).toContainText('1 个文件 · 1 项')
+  await preview.getByRole('button', { name: '返回编辑', exact: true }).click()
+  await expect(preview).toHaveCount(0)
+  await expect(page.getByTestId('submit-changes')).toBeEnabled()
+  expect((await state()).applies).toEqual([])
+
+  await page.getByTestId('edit-properties').click()
+  await page.getByRole('checkbox', { name: '选择属性 Description', exact: true }).check()
+  await page.getByRole('button', { name: '删除属性 (1)', exact: true }).click()
+  const removal = page.getByRole('dialog', { name: '删除属性', exact: true })
+  await expect(removal).toContainText('以下 1 项属性将从当前文件移除')
+  await removal.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(removal).toHaveCount(0)
+  await expect(row(page, 'Description')).toHaveCount(1)
+  await expect(row(page, 'Material').getByText('待提交', { exact: true })).toHaveAttribute('title', '修改')
+  expect((await state()).applies).toEqual([])
+})
+
+test('apply exception surfaces the error, re-reads, and keeps the draft for retry', async ({ harness }) => {
+  const { page, app, state } = harness
+  await app.evaluate(() => { globalThis.__workbenchFixture.applyError = '模拟 CAD 写入失败' })
+  await selectAndEdit(page, 'PartA.SLDPRT')
+  await row(page, 'Description').locator('input.single-property-value').fill('Will fail')
+  await page.getByTestId('save-draft').click()
+  await page.getByTestId('submit-changes').click()
+  await page.getByTestId('apply-changes').click()
+
+  await expect(page.locator('.notice.error')).toContainText('模拟 CAD 写入失败')
+  await expect(page.getByTestId('submit-changes')).toBeEnabled()
+  await expect(page.getByRole('heading', { name: 'PartA.SLDPRT', exact: true })).toBeVisible()
+  await expect(row(page, 'Description').locator('.property-display-value')).toHaveText('Will fail')
+  expect((await state()).applies).toEqual([])
+  expect((await state()).drafts.at(-1).entries).toHaveLength(1)
+  // The automatic re-read must include the failed draft, not a cleared snapshot.
+  expect((await state()).calls.filter(call => call.channel === 'cad').map(call => call.method)).toEqual([
+    'discover', 'connect', 'snapshot', 'apply', 'snapshot',
+  ])
+})
+
+test('partial write failure reports unfinished items and keeps only their draft', async ({ harness }) => {
+  const { page, app, state } = harness
+  await app.evaluate(() => { globalThis.__workbenchFixture.failedProperty = 'Description' })
+  await selectAndEdit(page, 'PartA.SLDPRT')
+  await row(page, 'Description').locator('input.single-property-value').fill('Not written')
+  await row(page, 'Material').locator('input.single-property-value').fill('Aluminum')
+  await page.getByTestId('save-draft').click()
+  await page.getByTestId('submit-changes').click()
+  await expect(page.getByRole('dialog', { name: '提交属性修改', exact: true })).toContainText('1 个文件 · 2 项')
+  await page.getByTestId('apply-changes').click()
+
+  await expect(page.locator('.notice')).toContainText('1 项成功，1 项未完成')
+  await expect(page.getByTestId('submit-changes')).toBeEnabled()
+  const draft = (await state()).drafts.at(-1)
+  expect(draft.entries).toHaveLength(1)
+  expect(draft.entries[0]).toEqual(expect.objectContaining({ propertyName: 'Description', newValue: 'Not written' }))
+  await expect(row(page, 'Description').locator('.property-display-value')).toHaveText('Not written')
+  await expect(row(page, 'Material').locator('.property-display-value')).toHaveText('Aluminum')
+})
+
+test('conflicting draft is not loaded and the user is warned', async ({ harness }) => {
+  const { page, app, state } = harness
+  await selectAndEdit(page, 'PartA.SLDPRT')
+  await row(page, 'Description').locator('input.single-property-value').fill('Local draft')
+  await page.getByTestId('save-draft').click()
+
+  // Simulate the CAD model changing while the draft was stored.
+  await app.evaluate(() => {
+    const model = globalThis.__workbenchFixture.snapshot.models.find(item => item.id === 'part-a')
+    const property = model.properties.find(item => item.name === 'Description')
+    property.value = property.evaluated = 'Changed in CAD'
+  })
+  await page.getByRole('button', { name: '连接', exact: true }).click()
+  await page.getByRole('button', { name: '重新连接', exact: true }).click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+
+  await expect(page.locator('.notice.error')).toContainText('1 项草稿与当前模型冲突')
+  await expect(page.getByRole('heading', { name: 'PartA.SLDPRT', exact: true })).toBeVisible()
+  await expect(row(page, 'Description').locator('.property-display-value')).toHaveText('Changed in CAD')
+  await expect(row(page, 'Description').getByText('待提交', { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('submit-changes')).toBeDisabled()
+  expect((await state()).applies).toEqual([])
+})
+
