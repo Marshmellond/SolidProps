@@ -17,7 +17,8 @@ export function AboutPage({ info }: AboutPageProps) {
     <section className="about">
       <div className="about-hero">
         <div className="about-logo" aria-hidden="true">
-          S
+          <span>S</span>
+          <i />
         </div>
         <div>
           <h2>SolidProps</h2>

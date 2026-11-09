@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="apps/desktop/resources/icons/solidprops.png" alt="SolidProps" width="88">
+</p>
+
 # SolidProps
 
 SolidProps 是一款面向 SolidWorks 用户的文档属性管理工具。它连接本机已打开的 SolidWorks 会话，把装配体及其子零件的自定义属性集中到一个界面中查看和编辑，减少逐个打开模型修改属性的重复操作。
@@ -10,6 +14,14 @@ SolidProps 是一款面向 SolidWorks 用户的文档属性管理工具。它连
 - **写回可追踪**：提交前记录审计信息，写回后自动重新读取，避免把未知状态当成成功。
 - **装配结构只读浏览**：查看父子层级、实例名称和引用关系，不修改装配结构。
 - **版本与兼容提示**：连接时识别 SolidWorks 版本，不支持写回的版本会明确提示只读原因。
+
+## 界面预览
+
+<img src="docs/assets/screenshots/workspace.png" alt="属性工作台：集中查看装配文件与属性" width="860">
+
+<img src="docs/assets/screenshots/editing.png" alt="编辑状态：批量修改属性并保存草稿" width="860">
+
+<img src="docs/assets/screenshots/about.png" alt="关于页面" width="860">
 
 ## 系统要求
 

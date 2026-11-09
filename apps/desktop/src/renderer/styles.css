@@ -1606,15 +1606,29 @@ a {
 .about-logo {
   width: 56px;
   height: 56px;
-  border-radius: 14px;
+  border-radius: 15px;
   background: #ee2233;
   color: #fff;
   display: grid;
   place-items: center;
-  font-size: 34px;
-  font-weight: 750;
-  transform: skew(-8deg);
+  position: relative;
   box-shadow: 0 4px 10px #ee22331f;
+}
+.about-logo span {
+  font-size: 39px;
+  font-weight: 750;
+  transform: skew(-12deg);
+  line-height: 1;
+}
+.about-logo i {
+  position: absolute;
+  width: 17px;
+  height: 6px;
+  background: #fff;
+  right: 6px;
+  bottom: 14px;
+  transform: rotate(-46deg);
+  border: 1px solid #ee2233;
 }
 .about-hero h2 {
   font-size: 22px;
