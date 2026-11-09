@@ -4,6 +4,10 @@ Electron / React / TypeScript 桌面端 + 独立 Python CAD Worker。聚焦装�
 
 支持 Windows 10 / Windows 11 64 位；Windows 7 / 8 / 8.1 和 32 位系统不支持。目标机需已安装 SolidWorks（读取最低 2018，写回仅认证 34.0.0）。
 
+## 下载
+
+Windows 安装包通过 [GitHub Releases](https://github.com/Marshmellond/SolidProps/releases) 发布，文件名 `SolidProps-Setup-<版本>-x64.exe`，Release 说明中同时提供 SHA256。Git tag 只标记源码版本，安装包作为 Release 附件上传，不提交到仓库。
+
 ## 项目边界
 
 - 客户 CAD 模型不进入 Git 仓库，也不直接执行写回测试；工作副本放 `.local/`。
