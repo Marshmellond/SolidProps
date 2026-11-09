@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import type {
+  AppInfo,
   ApplyResult,
   Bridge,
   Capabilities,
@@ -26,6 +27,7 @@ import type {
 import { request } from './bridge'
 import { PropertyWorkbench } from './components/PropertyWorkbench'
 import { ConnectionPage } from './components/ConnectionPage'
+import { AboutPage } from './components/AboutPage'
 import { EditActions } from './components/EditActions'
 import { AssemblyTree } from './components/AssemblyTree'
 import { CompatibilityNotice } from './components/CompatibilityNotice'
@@ -40,6 +42,8 @@ declare global {
   interface Window {
     cadweave?: Bridge & {
       windowControl?: (action: 'minimize' | 'maximize' | 'close') => void
+      appInfo?: () => Promise<AppInfo>
+      openExternal?: (url: string) => void
     }
   }
 }
@@ -123,6 +127,7 @@ export default function App() {
   const [assemblyQuery, setAssemblyQuery] = useState('')
   const [assemblyLevel, setAssemblyLevel] = useState(Infinity)
   const [needsRefresh, setNeedsRefresh] = useState(false)
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const booted = useRef(false)
   const changes = Object.values(draft)
   const [undoHistory, setUndoHistory] = useState<Record<string, Change>[]>([])
@@ -199,6 +204,7 @@ export default function App() {
       booted.current = true
       void discover()
     }
+    window.cadweave?.appInfo?.().then(setAppInfo).catch(() => {})
   }, [])
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -398,6 +404,16 @@ export default function App() {
             </button>
           ))}
         </div>
+        <div className="rail-nav rail-bottom">
+          <button
+            className={page === 'about' ? 'active' : ''}
+            onClick={() => setPage('about')}
+            title="关于"
+          >
+            <Info size={21} />
+            <span>关于</span>
+          </button>
+        </div>
       </aside>
       <div className="app-body">
         <header className="topbar">
@@ -494,8 +510,9 @@ export default function App() {
         ) : (
           <main className="page-content">
             <div className="page-title">
-              <h1>{nav.find((n) => n.id === page)?.label}</h1>
+              <h1>{page === 'about' ? '关于' : nav.find((n) => n.id === page)?.label}</h1>
             </div>
+            {page === 'about' && <AboutPage info={appInfo} />}
             {page === 'connections' && (
               <ConnectionPage
                 sessions={sessions}

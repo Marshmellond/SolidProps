@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join, resolve } from "node:path";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { WorkerClient } from "./worker-client";
@@ -185,6 +185,22 @@ app.whenReady().then(() => {
     else if (action === "maximize")
       window.isMaximized() ? window.unmaximize() : window.maximize();
     else if (action === "close") window.close();
+  });
+  ipcMain.handle("app:info", (event) => {
+    if (event.sender !== window?.webContents) throw new Error("未授权窗口");
+    return { name: app.getName(), version: app.getVersion() };
+  });
+  ipcMain.on("external:open", (event, url: unknown) => {
+    if (event.sender !== window?.webContents || typeof url !== "string") return;
+    try {
+      const target = new URL(url);
+      // Only the project's GitHub pages may be opened from the About page.
+      if (target.protocol !== "https:" || target.hostname !== "github.com") return;
+      if (target.pathname !== "/Marshmellond" && !target.pathname.startsWith("/Marshmellond/")) return;
+      void shell.openExternal(target.toString());
+    } catch {
+      // Malformed URLs are ignored; the renderer only sends fixed links.
+    }
   });
   createWindow();
   app.on("activate", () => {

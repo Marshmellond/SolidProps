@@ -79,4 +79,9 @@ export interface Bridge {
   request(method: string, params?: unknown): Promise<unknown>
   local(method: string, params?: unknown): Promise<unknown>
 }
-export type Page = 'workspace' | 'connections'
+export type Page = 'workspace' | 'connections' | 'about'
+
+export interface AppInfo {
+  name: string
+  version: string
+}
