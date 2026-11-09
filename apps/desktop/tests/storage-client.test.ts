@@ -9,7 +9,7 @@ const echo = `let input='';process.stdin.setEncoding('utf8');process.stdin.on('d
 
 describe("StorageClient bounded one-shot IPC", () => {
   it("exposes only public local operations", async () => {
-    expect([...LOCAL_METHODS]).toEqual(["draft.save", "draft.load", "draft.delete", "history.list", "history.export", "history.append"]);
+    expect([...LOCAL_METHODS]).toEqual(["draft.save", "draft.load", "draft.delete"]);
     const c = client(echo);
     await expect(c.request("audit.begin", {})).rejects.toThrow("不允许");
     await expect(c.request("execute", {})).rejects.toThrow("不允许");
@@ -31,9 +31,9 @@ describe("StorageClient bounded one-shot IPC", () => {
   });
   it("limits concurrent short-lived processes and releases capacity", async () => {
     const c = client(`process.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>console.log('{"result":true}'),150));`);
-    const requests = Array.from({ length: 4 }, () => c.request("history.list"));
-    await expect(c.request("history.list")).rejects.toThrow("忙");
+    const requests = Array.from({ length: 4 }, () => c.request("draft.load"));
+    await expect(c.request("draft.load")).rejects.toThrow("忙");
     await expect(Promise.all(requests)).resolves.toEqual([true, true, true, true]);
-    await expect(c.request("history.list")).resolves.toBe(true);
+    await expect(c.request("draft.load")).resolves.toBe(true);
   });
 });

@@ -5,7 +5,7 @@ const model = (id, name, properties, kind = 'part') => ({
   configuration: '', scope: 'document', properties, writable: true, dirty: false, reason: '',
 })
 const session = { id: 'mock-session', cadId: 'solidworks', label: 'Mock SolidWorks — isolated UI fixture', version: 'Fixture', connectable: true, detail: 'In-memory bridge; no discovery, COM, or CAD processes.' }
-const capabilities = { cadId: 'solidworks', displayName: 'Mock SolidWorks', writable: true, configurations: false, designated: false, notes: '' }
+const capabilities = { cadId: 'solidworks', displayName: 'Mock SolidWorks', writable: true, notes: '' }
 const snapshot = {
   id: 'mock-snapshot-1', sessionId: session.id, cadId: session.cadId, title: 'FixtureAssembly', scope: 'document', warnings: [],
   models: [

@@ -5,7 +5,7 @@ import threading
 from copy import deepcopy
 from .contracts import WorkerError
 from . import discovery
-from .adapters import builtin_plugins
+from .solidworks import SolidWorksAdapter
 
 MAX_LINE = 4 * 1024 * 1024
 
@@ -32,9 +32,9 @@ def fields(value, required, optional=()):
 
 
 class Worker:
-    def __init__(self, discover=None, factories=None):
+    def __init__(self, discover=None, adapter_factory=None):
         self.discover = discover if discover is not None else discovery.discover
-        self.factories = factories if factories is not None else {p.cad_id: p.factory for p in builtin_plugins()}
+        self.adapter_factory = adapter_factory if adapter_factory is not None else SolidWorksAdapter
         self.adapter = None
         self.snapshot = None
         self.thread = threading.get_ident()
@@ -64,7 +64,7 @@ class Worker:
         except Exception as exc:
             # COM details belong on stderr; frontend receives a truthful failure.
             print(f'{type(exc).__name__}: {exc}', file=sys.stderr)
-            return dict(id=request_id, error=dict(code='CAD_API_ERROR', message=f'CAD 接口调用失败，未宣称成功：{exc}'), protocolVersion=1)
+            return dict(id=request_id, error=dict(code='CAD_API_ERROR', message=f'SolidWorks 接口调用失败，未宣称成功：{exc}'), protocolVersion=1)
 
     def _method(self, method, params):
         if method == 'discover':
@@ -81,11 +81,10 @@ class Worker:
             session = next((s for s in self.discover()['sessions'] if s['id'] == params['sessionId']), None)
             if not session or not session['connectable']:
                 raise WorkerError('SESSION_UNAVAILABLE', '所选会话不存在或不可安全连接。')
-            factory = self.factories.get(session['cadId'])
-            if factory is None:
-                raise WorkerError('UNSUPPORTED_CAD', '当前版本未启用该 CAD 驱动。')
+            if session['cadId'] != 'solidworks':
+                raise WorkerError('UNSUPPORTED_CAD', '仅支持 SolidWorks。')
             self.close()
-            self.adapter = factory(deepcopy(session))
+            self.adapter = self.adapter_factory(deepcopy(session))
             return dict(session=deepcopy(self.adapter.session), capabilities=deepcopy(self.adapter.capabilities))
         if method not in ('snapshot', 'apply'):
             raise WorkerError('METHOD_NOT_FOUND', '未知协议方法。')

@@ -8,7 +8,7 @@ app.setPath('userData', userData)
 app.setPath('sessionData', path.join(userData, 'session'))
 app.disableHardwareAcceleration()
 const clone = value => JSON.parse(JSON.stringify(value))
-const state = { calls: [], applies: [], drafts: [], history: [], snapshot: clone(snapshot) }
+const state = { calls: [], applies: [], drafts: [], snapshot: clone(snapshot) }
 // Inspected only through Playwright Electron main-process evaluation, not exposed to renderer.
 globalThis.__workbenchFixture = state
 ipcMain.handle('fixture:cad', (_event, method, params) => {
@@ -40,13 +40,6 @@ ipcMain.handle('fixture:local', (_event, method, params) => {
     return clone(draft)
   }
   if (method === 'draft.delete') { state.drafts = []; return {} }
-  if (method === 'history.append') {
-    const row = { ...clone(params), id: `history-${state.history.length + 1}`, time: '2026-01-01T00:00:00.000Z' }
-    state.history.unshift(row)
-    return clone(row)
-  }
-  if (method === 'history.list') return clone(state.history.slice(params.offset ?? 0, (params.offset ?? 0) + (params.limit ?? 200)))
-  if (method === 'history.export') return { suggestedName: 'fixture.txt', content: 'Mock history' }
   throw new Error(`Unexpected local fixture method: ${method}`)
 })
 app.whenReady().then(() => {

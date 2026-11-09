@@ -9,9 +9,9 @@ describe('native CAD bridge only', () => {
   it('does not create fake sessions or model snapshots in a browser', async () => {
     vi.stubGlobal('window', {})
     const bridge = await import('./bridge')
-    await expect(bridge.request('discover')).rejects.toThrow('桌面 CAD 桥接')
+    await expect(bridge.request('discover')).rejects.toThrow('SolidProps')
     await expect(bridge.request('snapshot', { scope: 'document' })).rejects.toThrow(
-      '桌面 CAD 桥接',
+      'SolidProps',
     )
   })
 

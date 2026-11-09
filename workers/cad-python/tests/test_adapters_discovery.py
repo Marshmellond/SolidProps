@@ -1,30 +1,33 @@
 from types import SimpleNamespace as NS
 from cad_worker import discovery
-from cad_worker.adapters import builtin_plugins
-from cad_worker.contracts import capabilities
 from cad_worker.service import Worker
 
 
-def test_only_solidworks_enabled():
-    plugins = builtin_plugins()
-    assert [p.cad_id for p in plugins] == ['solidworks']
-    assert set(Worker().factories) == {'solidworks'}
-
-
-def test_processes_ignore_unregistered_cad(monkeypatch):
+def test_processes_only_match_solidworks(monkeypatch):
     rows = [NS(info=dict(pid=i, name=name, exe='C:/cad/' + name, create_time=1))
             for i, name in enumerate(('SLDWORKS.exe', 'othercad.exe', 'notepad.exe'), 1)]
     monkeypatch.setattr(discovery.psutil, 'process_iter', lambda attrs: rows)
-    assert [p['cadId'] for p in discovery.processes()] == ['solidworks']
+    assert [p['pid'] for p in discovery.processes()] == [1]
 
 
 def test_discovery_is_readonly_and_rejects_multi_instance(monkeypatch):
-    monkeypatch.setattr(discovery, 'processes', lambda: [dict(cadId='solidworks', pid=i, started=1, executable='D:/cad/SldWorks.exe') for i in (1, 2)])
+    monkeypatch.setattr(discovery, 'processes', lambda: [
+        dict(pid=i, started=1, executable='D:/cad/SldWorks.exe') for i in (1, 2)])
     monkeypatch.setattr(discovery, 'registrations', lambda: ({'SldWorks.Application': ['D:/cad/SldWorks.exe']}, []))
     response = discovery.discover()
     assert len(response['sessions']) == 2
-    assert all(not s['connectable'] for s in response['sessions'])
+    assert all(session['cadId'] == 'solidworks' for session in response['sessions'])
+    assert all(not session['connectable'] for session in response['sessions'])
     assert {d['cadId'] for d in response['diagnostics']} == {'solidworks'}
+
+
+def test_single_instance_is_connectable(monkeypatch):
+    monkeypatch.setattr(discovery, 'processes', lambda: [dict(pid=7, started=1, executable='D:/cad/SldWorks.exe')])
+    monkeypatch.setattr(discovery, 'registrations', lambda: ({'SldWorks.Application': ['D:/cad/SldWorks.exe']}, []))
+    sessions = discovery.discover()['sessions']
+    assert len(sessions) == 1
+    assert sessions[0]['id'] == 'solidworks:7:1'
+    assert sessions[0]['connectable']
 
 
 def test_absent_process_has_diagnostic_but_no_synthetic_session(monkeypatch):
@@ -33,7 +36,7 @@ def test_absent_process_has_diagnostic_but_no_synthetic_session(monkeypatch):
     assert discovery.discover()['sessions'] == []
 
 
-def test_unknown_driver_rejected_before_existing_adapter_closed():
+def test_non_solidworks_session_rejected_before_existing_adapter_closed():
     session = dict(id='future:1', cadId='future', connectable=True)
     worker = Worker(discover=lambda: dict(sessions=[session], diagnostics=[]))
     closed = []
@@ -43,13 +46,13 @@ def test_unknown_driver_rejected_before_existing_adapter_closed():
     assert closed == []
 
 
-def test_future_adapter_can_be_injected_without_changing_protocol():
-    session = dict(id='future:1', cadId='future', connectable=True)
-    class FutureAdapter:
+def test_solidworks_adapter_factory_is_injected():
+    session = dict(id='solidworks:1', cadId='solidworks', connectable=True)
+    class FakeAdapter:
         def __init__(self, value):
             self.session = value
-            self.capabilities = capabilities('future', display_name='Future CAD')
+            self.capabilities = dict(cadId='solidworks', displayName='SolidWorks', writable=False, notes='')
         def close(self): pass
-    worker = Worker(discover=lambda: dict(sessions=[session], diagnostics=[]), factories={'future': FutureAdapter})
+    worker = Worker(discover=lambda: dict(sessions=[session], diagnostics=[]), adapter_factory=FakeAdapter)
     response = worker.dispatch(dict(id='1', method='connect', params=dict(sessionId=session['id']), protocolVersion=1))
-    assert response['result']['capabilities']['displayName'] == 'Future CAD'
+    assert response['result']['capabilities']['displayName'] == 'SolidWorks'

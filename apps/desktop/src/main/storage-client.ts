@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 
-export const LOCAL_METHODS = new Set([
-  "draft.save", "draft.load", "draft.delete", "history.list", "history.export", "history.append",
-]);
+export const LOCAL_METHODS = new Set(["draft.save", "draft.load", "draft.delete"]);
 const MAX_PAYLOAD = 4 * 1024 * 1024;
 
 /** Short-lived stdlib sqlite3 process; never accepts a renderer-supplied DB path. */
@@ -19,7 +17,7 @@ export class StorageClient {
     if (!LOCAL_METHODS.has(method) && !(internal && ["audit.begin", "audit.finish"].includes(method)))
       throw new Error("不允许的本地存储操作");
     if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("存储参数必须为对象");
-    const maxOutput = method === "history.export" ? 32 * 1024 * 1024 : MAX_PAYLOAD * 2;
+    const maxOutput = MAX_PAYLOAD * 2;
     const input = JSON.stringify({ method, params }) + "\n";
     if (Buffer.byteLength(input, "utf8") > MAX_PAYLOAD) throw new Error("存储请求过大");
     if (this.active >= 4) throw new Error("本地存储忙，请稍后重试");

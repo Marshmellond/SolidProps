@@ -29,7 +29,6 @@ describe('CAD connection page', () => {
         sessions={sessions}
         diagnostics={[]}
         session={null}
-        capabilities={null}
         busy={false}
         onDiscover={vi.fn()}
         onConnect={vi.fn()}
@@ -42,5 +41,23 @@ describe('CAD connection page', () => {
     expect(html).toContain('连接并读取模型')
     expect(html).not.toContain('演示')
     expect(html).not.toContain('demo')
+  })
+
+  it('turns the connected card into the only disconnect action', () => {
+    const html = renderToStaticMarkup(
+      <ConnectionPage
+        sessions={sessions}
+        diagnostics={[]}
+        session={sessions[0]}
+        busy={false}
+        onDiscover={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+      />,
+    )
+    expect(html).toContain('刷新连接池')
+    expect(html).toMatch(/>已连接</)
+    expect(html.match(/断开连接/g)).toHaveLength(1)
+    expect(html).toContain('连接并读取模型')
   })
 })

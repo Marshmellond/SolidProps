@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AssemblyTree, type AssemblyTreeProps } from './AssemblyTree'
+import { AssemblyTree, assemblyDepth } from './AssemblyTree'
 import type { Occurrence } from '../types'
 
 const root: Occurrence = {
@@ -30,17 +30,9 @@ const root: Occurrence = {
   ],
 }
 
-function render(overrides: Partial<AssemblyTreeProps> = {}) {
+function render(query = '', expandLevel?: number) {
   return renderToStaticMarkup(
-    <AssemblyTree
-      root={root}
-      query=""
-      focusedModelId={null}
-      collapsedIds={new Set()}
-      onToggle={vi.fn()}
-      onLocate={vi.fn()}
-      {...overrides}
-    />,
+    <AssemblyTree root={root} query={query} expandLevel={expandLevel} />,
   )
 }
 
@@ -48,75 +40,53 @@ function itemTags(html: string) {
   return html.match(/<div role="treeitem"[^>]*>/g) ?? []
 }
 
-describe('assembly occurrence tree', () => {
-  it('renders one root row with children grouped beneath it, not a duplicate title row', () => {
+describe('read-only assembly occurrence tree', () => {
+  it('renders the whole tree with only expand and collapse controls', () => {
     const html = render()
     expect(html.match(/role="tree"/g)).toHaveLength(1)
-    expect(html.match(/class="tree-row /g)).toHaveLength(6)
-    expect(html.match(/<span title="Main assembly">Main assembly<\/span>/g)).toHaveLength(1)
+    expect(html).toContain('class="assembly-static-tree"')
     expect(itemTags(html)).toHaveLength(6)
-    expect(itemTags(html)[0]).toContain('aria-level="1" aria-expanded="true"')
-    expect(html.match(/role="group"/g)).toHaveLength(2)
-    expect(html).toContain('Bolt instance 1')
+    expect(html.match(/class="assembly-toggle"/g)).toHaveLength(2)
+    expect(html).not.toContain('aria-selected')
+    expect(html).not.toContain('tabindex')
   })
 
-  it('uses an assembly icon for an empty root and omits leaf expansion state', () => {
-    const html = render({ root: { ...root, children: [] } })
-    expect(html).toContain('lucide-boxes')
-    expect(html).not.toContain('aria-expanded')
-    expect(html).not.toContain('role="group"')
+  it('shows child depth through nested indentation guides', () => {
+    const html = render()
+    expect(itemTags(html)[0]).toContain('aria-level="1"')
+    expect(itemTags(html)[1]).toContain('aria-level="2"')
+    expect(html.match(/class="assembly-children"/g)).toHaveLength(2)
   })
 
-  it('honors collapsed branches without duplicating or rendering their children', () => {
-    const html = render({ collapsedIds: new Set(['root']) })
-    expect(itemTags(html)).toHaveLength(1)
-    expect(itemTags(html)[0]).toContain('aria-expanded="false"')
-    expect(html).not.toContain('Bolt instance 1')
-    expect(html).not.toContain('role="group"')
+  it('reports the deepest level of the tree', () => {
+    expect(assemblyDepth(root)).toBe(2)
+    expect(assemblyDepth({ ...root, children: [] })).toBe(0)
   })
 
-  it('expands matching descendant paths during search despite controlled collapse state', () => {
-    const html = render({ query: 'NEEDLE', collapsedIds: new Set(['root', 'nested']) })
-    expect(itemTags(html)).toHaveLength(3)
-    expect(html.match(/aria-expanded="true"/g)).toHaveLength(2)
+  it('collapses deeper levels with the expand-level preset', () => {
+    const html = render('', 1)
+    expect(html).toContain('Nested assembly')
+    expect(html).not.toContain('Search needle')
+    expect(itemTags(html)).toHaveLength(5)
+  })
+
+  it('marks unloaded occurrences instead of offering selection', () => {
+    const html = render()
+    expect(html).toContain('class="assembly-node-missing">未加载</span>')
+    expect(html).toContain('Unavailable part')
+  })
+
+  it('highlights and filters matching branches while keeping ancestor context', () => {
+    const html = render('NEEDLE')
+    expect(html).toContain('assembly-node-hit')
     expect(html).toContain('Main assembly')
     expect(html).toContain('Nested assembly')
     expect(html).toContain('Search needle')
     expect(html).not.toContain('Bolt instance')
   })
 
-  it('does not select null-model nodes when no model is focused', () => {
-    const html = render()
-    expect(html).not.toContain('aria-selected="true"')
-    expect(html).not.toContain('tree-row chosen')
-    expect(html).toMatch(/class="tree-label" title="Unavailable part" disabled=""/)
-  })
-
-  it('selects only the focused occurrence when siblings share the same model', () => {
-    const html = render({ focusedModelId: 'bolt', focusedOccurrenceId: 'bolt-2' })
-    const selected = itemTags(html).filter((tag) => tag.includes('aria-selected="true"'))
-    expect(selected).toHaveLength(1)
-    expect(selected[0]).toContain('aria-label="Bolt instance 2"')
-    expect(html.match(/tree-row chosen/g)).toHaveLength(1)
-  })
-
-  it('keeps legacy model selection when occurrence focus is omitted', () => {
-    const html = render({ focusedModelId: 'bolt' })
-    expect(html.match(/aria-selected="true"/g)).toHaveLength(2)
-  })
-
-  it('can explicitly clear occurrence selection without selecting null-model rows', () => {
-    expect(render({ focusedModelId: 'bolt', focusedOccurrenceId: null })).not.toContain(
-      'aria-selected="true"',
-    )
-    expect(render({ focusedOccurrenceId: 'missing' })).not.toContain('aria-selected="true"')
-  })
-
-  it('exposes complete long names and read-only status through tooltips', () => {
-    const name = 'A very long assembly name that must remain available when the row is truncated'
-    const html = render({ root: { ...root, name, status: 'readonly', children: [] } })
-    expect(html).toContain(`class="tree-label" title="${name}"`)
-    expect(html).toContain(`<span title="${name}">${name}</span>`)
-    expect(html).toContain('title="只读" aria-label="只读"')
+  it('renders nothing when the query matches no occurrence', () => {
+    const html = render('missing-name')
+    expect(html).not.toContain('role="treeitem"')
   })
 })

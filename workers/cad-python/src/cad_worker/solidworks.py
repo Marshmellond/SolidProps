@@ -91,7 +91,7 @@ class SolidWorksAdapter:
             pass
         if production_bridge:
             self.bridge.certify(self.session['version'])
-        self.capabilities = capabilities('solidworks', self.bridge.write_certified, True, notes=self.bridge.write_reason)
+        self.capabilities = capabilities(self.bridge.write_certified, notes=self.bridge.write_reason)
         self.doc = None
         self.identity = None
         self.write_uncertain = False
@@ -103,7 +103,7 @@ class SolidWorksAdapter:
     def _check_process(self):
         if threading.get_ident() != self.thread:
             raise WorkerError('THREAD_VIOLATION', 'COM 调用只能在 Worker 主线程串行执行。')
-        group = [p for p in self.inventory() if p['cadId'] == 'solidworks']
+        group = list(self.inventory())
         if len(group) != 1:
             raise WorkerError('AMBIGUOUS_SESSION', 'SolidWorks 多实例或会话已退出，无法可靠区分，拒绝连接/写入。')
         p = group[0]

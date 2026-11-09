@@ -1,17 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  ArrowDownToLine,
   ArrowRight,
   Boxes,
-  Check,
-  FileClock,
   Info,
   LayoutGrid,
   Link2,
   Loader2,
   Square,
   Minus,
+  RefreshCw,
   Save,
   X,
 } from 'lucide-react'
@@ -21,15 +19,15 @@ import type {
   Capabilities,
   Change,
   Diagnostic,
-  Operation,
   Page,
   Session,
   Snapshot,
 } from './types'
-import { exportText, request } from './bridge'
+import { request } from './bridge'
 import { PropertyWorkbench } from './components/PropertyWorkbench'
 import { ConnectionPage } from './components/ConnectionPage'
 import { EditActions } from './components/EditActions'
+import { AssemblyTree } from './components/AssemblyTree'
 import { draftKey, draftEntries, draftSignature, restoreDraft, type SavedDraft } from './drafts'
 
 async function local<T>(method: string, params: unknown = {}): Promise<T> {
@@ -40,10 +38,6 @@ async function local<T>(method: string, params: unknown = {}): Promise<T> {
 declare global {
   interface Window {
     cadweave?: Bridge & {
-      exportFile?: (options: {
-        suggestedName: string
-        content: string
-      }) => Promise<{ path?: string; cancelled: boolean }>
       windowControl?: (action: 'minimize' | 'maximize' | 'close') => void
     }
   }
@@ -51,7 +45,6 @@ declare global {
 const nav = [
   { id: 'workspace', label: '工作台', icon: LayoutGrid },
   { id: 'connections', label: '连接', icon: Link2 },
-  { id: 'history', label: '记录', icon: FileClock },
 ] as const
 const keyOf = (m: string, p: string) => `${m}\u0000${p}`
 function errorText(e: unknown) {
@@ -92,14 +85,14 @@ function Empty({
 }: {
   icon: ReactNode
   title: string
-  text: string
+  text?: string
   children?: ReactNode
 }) {
   return (
     <div className="empty">
       <div className="empty-icon">{icon}</div>
       <h2>{title}</h2>
-      <p>{text}</p>
+      {text && <p>{text}</p>}
       {children}
     </div>
   )
@@ -118,44 +111,66 @@ export default function App() {
   const [savedAt, setSavedAt] = useState('')
   const [draftConflicts, setDraftConflicts] = useState(0)
   const [draft, setDraft] = useState<Record<string, Change>>({}),
-    [selected, setSelected] = useState<Set<string>>(new Set())
+    [selected, setSelected] = useState<string | null>(null)
   const [modal, setModal] = useState<'preview' | null>(null),
     [confirmation, setConfirmation] = useState<{
       title: string
       text: string
       action: () => void
     } | null>(null)
-  const [logs, setLogs] = useState<Operation[]>([])
+  const [assemblyOpen, setAssemblyOpen] = useState(false)
+  const [assemblyQuery, setAssemblyQuery] = useState('')
+  const [assemblyLevel, setAssemblyLevel] = useState(Infinity)
   const [needsRefresh, setNeedsRefresh] = useState(false)
   const booted = useRef(false)
   const changes = Object.values(draft)
-  const [historyOffset, setHistoryOffset] = useState(0)
-  async function loadHistory(offset = 0) {
-    const rows = await local<(Omit<Operation, 'status'> & { status: string })[]>('history.list', {
-      limit: 200,
-      offset,
-    })
-    setHistoryOffset(offset)
-    setLogs(
-      rows.map((row) => ({
-        ...row,
-        status:
-          row.status === 'success'
-            ? 'success'
-            : row.status === 'failure' || row.status === 'error'
-              ? 'error'
-              : 'warning',
-      })),
-    )
+  const [undoHistory, setUndoHistory] = useState<Record<string, Change>[]>([])
+  const [redoHistory, setRedoHistory] = useState<Record<string, Change>[]>([])
+  const lastChangeKey = useRef<string | null>(null)
+  function resetUndo() {
+    setUndoHistory([])
+    setRedoHistory([])
+    lastChangeKey.current = null
   }
-  const log = (title: string, text: string, status: Operation['status'] = 'success') => {
-    void local('history.append', {
-      title,
-      detail: text,
-      status: status === 'success' ? 'success' : status === 'error' ? 'failure' : 'info',
+  function updateDraft(next: Record<string, Change>) {
+    const keys = new Set([...Object.keys(draft), ...Object.keys(next)])
+    const changed = [...keys].filter((key) => draft[key] !== next[key])
+    if (!changed.length) return
+    const onlyKey = changed.length === 1 ? changed[0] : null
+    // Consecutive keystrokes on the same property collapse into one undo step.
+    if (!(onlyKey && onlyKey === lastChangeKey.current)) {
+      setUndoHistory((history) => [...history.slice(-49), draft])
+      setRedoHistory([])
+    }
+    lastChangeKey.current = onlyKey
+    setDraft(next)
+  }
+  function undoLast() {
+    if (!undoHistory.length) return
+    const previous = undoHistory[undoHistory.length - 1]
+    setRedoHistory((history) => [...history.slice(-49), draft])
+    setDraft(previous)
+    setUndoHistory(undoHistory.slice(0, -1))
+    lastChangeKey.current = null
+  }
+  function redoLast() {
+    if (!redoHistory.length) return
+    const next = redoHistory[redoHistory.length - 1]
+    setUndoHistory((history) => [...history.slice(-49), draft])
+    setDraft(next)
+    setRedoHistory(redoHistory.slice(0, -1))
+    lastChangeKey.current = null
+  }
+  function undoAll() {
+    if (!changes.length) return
+    setConfirmation({
+      title: '撤回全部修改？',
+      text: '将清除所有尚未提交的属性修改，不会修改 CAD 文件。',
+      action: () => {
+        setDraft({})
+        resetUndo()
+      },
     })
-      .then(() => loadHistory())
-      .catch((e) => setNotice({ text: `记录保存失败：${errorText(e)}`, error: true }))
   }
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label)
@@ -163,22 +178,19 @@ export default function App() {
     try {
       await fn()
     } catch (e) {
-      const text = errorText(e)
-      setNotice({ text, error: true })
-      log(label, text, 'error')
+      setNotice({ text: errorText(e), error: true })
     } finally {
       setBusy('')
     }
   }
   async function discover() {
-    await run('发现 CAD 会话', async () => {
+    await run('发现 SolidWorks 会话', async () => {
       const r = await request<{
         sessions: Session[]
         diagnostics: Diagnostic[]
       }>('discover')
       setSessions(r.sessions)
       setDiagnostics(r.diagnostics)
-      log('发现 CAD 会话', `发现 ${r.sessions.length} 个会话`)
     })
   }
   useEffect(() => {
@@ -204,6 +216,7 @@ export default function App() {
         text: `有 ${changes.length} 项修改尚未保存为草稿，继续将丢弃未保存的修改。`,
         action: () => {
           setDraft({})
+          resetUndo()
           action()
         },
       })
@@ -211,6 +224,7 @@ export default function App() {
   }
   async function loadSavedDraft(data: Snapshot) {
     setDraft({})
+    resetUndo()
     setSavedSignature('[]')
     setSavedAt('')
     setDraftConflicts(0)
@@ -223,7 +237,7 @@ export default function App() {
     if (!restored.conflicts.length) setSavedSignature(draftSignature(restored.changes))
     else
       setNotice({
-        text: `${restored.conflicts.length} 项草稿与当前模型冲突，未载入这些项；请检查记录和当前属性后重新编辑并保存。`,
+        text: `${restored.conflicts.length} 项草稿与当前模型冲突，未载入这些项；请检查当前属性后重新编辑并保存。`,
         error: true,
       })
   }
@@ -241,24 +255,24 @@ export default function App() {
       setSavedAt(saved.savedAt)
       setDraftConflicts(0)
       setEditing(false)
-      await local('history.append', {
-        title: '保存草稿',
-        detail: `${snap.title} · ${changes.length} 项变更（未写入 CAD）`,
-        status: 'success',
-        changes: draftEntries(snap, changes).map((c) => ({
-          ...c,
-          modelName: snap.models.find((m) => m.path === c.modelPath)?.name ?? '',
-          success: null,
-          saved: false,
-          message: '已保存本地草稿，尚未提交',
-        })),
-      })
-      await loadHistory()
     })
   }
   function connect(s: Session) {
-    guard('切换连接？', () => {
+    const reconnecting = session !== null
+    const keep = session?.id === s.id ? selected : null
+    const keepPage = page
+    const keepEditing = editing
+    guard(session && session.id !== s.id ? '切换连接？' : '重新连接？', () => {
       void run('连接会话', async () => {
+        if (session) {
+          await request('disconnect')
+          setSession(null)
+          setCap(null)
+          setSnap(null)
+          setEditing(false)
+          setDraft({})
+          resetUndo()
+        }
         const c = await request<{
           session: Session
           capabilities: Capabilities
@@ -269,29 +283,22 @@ export default function App() {
         setEditing(false)
         setDraft({})
         setNeedsRefresh(false)
-        setSelected(new Set())
+        setSelected(null)
         const data = await request<Snapshot>('snapshot', { scope: 'document' })
         setSnap(data)
+        const nextSelected = keep && data.models.some((m) => m.id === keep) ? keep : null
+        setSelected(nextSelected)
         await loadSavedDraft(data)
-        setPage('workspace')
-        log('连接会话', `${s.label} · ${data.models.length} 个模型`)
-      })
-    })
-  }
-  function refresh() {
-    const scope = 'document'
-    guard('重新读取快照？', () => {
-      void run('读取模型快照', async () => {
-        setNeedsRefresh(true)
-        setEditing(false)
-        const data = await request<Snapshot>('snapshot', { scope })
-        setSnap(data)
-        setEditing(false)
-        setDraft({})
-        setSelected(new Set())
-        setNeedsRefresh(false)
-        await loadSavedDraft(data)
-        log('读取模型快照', `${data.title} · ${data.models.length} 个模型`)
+        // Reconnecting keeps the current page; a first connection always opens the workbench.
+        setPage(reconnecting ? keepPage : 'workspace')
+        if (
+          keepPage === 'workspace' &&
+          keepEditing &&
+          c.capabilities.writable &&
+          nextSelected &&
+          data.models.some((m) => m.id === nextSelected && m.writable && !m.dirty)
+        )
+          setEditing(true)
       })
     })
   }
@@ -349,13 +356,16 @@ export default function App() {
         const data = await request<Snapshot>('snapshot', { scope: 'document' })
         setSnap(data)
         setNeedsRefresh(false)
-        setSelected(new Set())
+        setSelected(
+          [selected, snap.id].find((id) => id && data.models.some((m) => m.id === id)) ??
+            data.models[0]?.id ??
+            null,
+        )
         await loadSavedDraft(data)
       } catch (e) {
         setNeedsRefresh(true)
         failure += `${failure ? '；' : ''}自动读取失败：${errorText(e)}`
       }
-      await loadHistory()
       const succeeded = outcome?.results.filter((r) => r.success && r.saved).length ?? 0
       const auditWarning = (outcome as (ApplyResult & { auditWarning?: string }) | null)
         ?.auditWarning
@@ -367,20 +377,11 @@ export default function App() {
       })
     })
   }
-  async function exportReport() {
-    await run('导出日志', async () => {
-      const report = await local<{ suggestedName: string; content: string }>('history.export', {
-        all: true,
-      })
-      if (window.cadweave?.exportFile) await window.cadweave.exportFile(report)
-      else exportText(report.suggestedName, report.content, 'text/plain')
-    })
-  }
   return (
     <div className="app">
       <aside className="rail">
-        <button className="brand-mark" title="CadWeave" onClick={() => setPage('workspace')}>
-          <span>C</span>
+        <button className="brand-mark" title="SolidProps" onClick={() => setPage('workspace')}>
+          <span>S</span>
           <i />
         </button>
         <div className="rail-nav">
@@ -388,10 +389,7 @@ export default function App() {
             <button
               key={n.id}
               className={page === n.id ? 'active' : ''}
-              onClick={() => {
-                setPage(n.id)
-                if (n.id === 'history') void run('读取记录', loadHistory)
-              }}
+              onClick={() => setPage(n.id)}
               title={n.label}
             >
               <n.icon size={21} />
@@ -402,13 +400,17 @@ export default function App() {
       </aside>
       <div className="app-body">
         <header className="topbar">
-          <div className="wordmark">
-            CadWeave <span>CAD 属性工作台</span>
-          </div>
+          <div className="wordmark">SolidProps</div>
           <div className="top-right">
+            {session && (
+              <button className="topbar-button" disabled={!!busy} onClick={() => connect(session)}>
+                <RefreshCw size={15} />
+                重新连接
+              </button>
+            )}
             <span className={`connection-pill ${session ? 'online' : ''}`}>
               <i />
-              {session ? session.label : '尚未连接 CAD'}
+              {session ? session.label : '尚未连接 SolidWorks'}
             </span>
             <div className="window-actions">
               {(['minimize', 'maximize', 'close'] as const).map((a, i) => (
@@ -442,6 +444,7 @@ export default function App() {
               <div className="title-actions">
                 <EditActions
                   editing={editing}
+                  hideStart
                   canStart={canStartEditing}
                   busy={!!busy}
                   locked={needsRefresh}
@@ -456,11 +459,7 @@ export default function App() {
               </div>
             </div>
             {!snap ? (
-              <Empty
-                icon={<Boxes size={36} />}
-                title="从连接一个 CAD 会话开始"
-                text="请先发现并连接已打开的 CAD 会话，再读取当前模型。"
-              >
+              <Empty icon={<Boxes size={36} />} title="连接 SolidWorks">
                 <button className="button primary" onClick={() => setPage('connections')}>
                   前往连接管理 <ArrowRight size={16} />
                 </button>
@@ -471,12 +470,22 @@ export default function App() {
                 selected={selected}
                 onSelectionChange={setSelected}
                 draft={draft}
-                onDraftChange={setDraft}
+                onDraftChange={updateDraft}
                 capabilities={cap}
                 editing={editing}
                 busy={!!busy}
                 needsRefresh={needsRefresh}
-                onRefresh={refresh}
+                canUndo={undoHistory.length > 0}
+                canRedo={redoHistory.length > 0}
+                onUndo={undoLast}
+                onRedo={redoLast}
+                onUndoAll={undoAll}
+                onEdit={() => setEditing(true)}
+                onShowAssembly={() => {
+                  setAssemblyQuery('')
+                  setAssemblyLevel(Infinity)
+                  setAssemblyOpen(true)
+                }}
               />
             )}
           </>
@@ -490,7 +499,6 @@ export default function App() {
                 sessions={sessions}
                 diagnostics={diagnostics}
                 session={session}
-                capabilities={cap}
                 busy={!!busy}
                 onDiscover={() => void discover()}
                 onConnect={connect}
@@ -503,125 +511,20 @@ export default function App() {
                       setSnap(null)
                       setEditing(false)
                       setDraft({})
-                      if (session) log('断开连接', session.label)
+                      resetUndo()
                     })
                   })
                 }
               />
             )}
-            {page === 'history' && (
-              <>
-                <div className="section-toolbar">
-                  <h2>
-                    记录 <span className="count">{logs.length}</span>
-                  </h2>
-                  <button
-                    className="button"
-                    disabled={!logs.length}
-                    onClick={() => void exportReport()}
-                  >
-                    <ArrowDownToLine size={15} />
-                    导出日志
-                  </button>
-                  <button
-                    className="button"
-                    disabled={!!busy || historyOffset === 0}
-                    onClick={() =>
-                      void run('读取记录', () => loadHistory(Math.max(0, historyOffset - 200)))
-                    }
-                  >
-                    上一页
-                  </button>
-                  <button
-                    className="button"
-                    disabled={!!busy || logs.length < 200}
-                    onClick={() => void run('读取记录', () => loadHistory(historyOffset + 200))}
-                  >
-                    下一页
-                  </button>
-                </div>
-                {!logs.length ? (
-                  <Empty
-                    icon={<FileClock size={34} />}
-                    title="暂无操作记录"
-                    text="发现、连接、读取、提交和导出操作发生后会显示在这里。"
-                  />
-                ) : (
-                  <div className="history-list">
-                    {logs.map((l) => (
-                      <article key={l.id}>
-                        <span className={`history-icon ${l.status}`}>
-                          {l.status === 'success' ? <Check size={17} /> : <Info size={17} />}
-                        </span>
-                        <div>
-                          <h3>
-                            {l.title}
-                            <span className={`tag ${l.status}`}>
-                              {l.status === 'success'
-                                ? '已完成'
-                                : l.status === 'warning'
-                                  ? '需关注'
-                                  : '失败'}
-                            </span>
-                          </h3>
-                          <p>{l.detail}</p>
-                          {!!l.changes?.length && (
-                            <details className="record-details">
-                              <summary>查看 {l.changes.length} 项变更</summary>
-                              {l.changes.map((c, i) => (
-                                <div className="record-change" key={i}>
-                                  <strong>
-                                    {c.modelName || c.modelPath} · {c.propertyName} ·{' '}
-                                    {c.operation === 'add'
-                                      ? '新增'
-                                      : c.operation === 'delete'
-                                        ? '删除'
-                                        : '修改'}
-                                  </strong>
-                                  <small>{c.modelPath}</small>
-                                  <p>
-                                    原值：
-                                    {c.operation === 'add' ? '（不存在）' : c.oldValue || '（空）'}
-                                  </p>
-                                  <p>
-                                    新值：
-                                    {c.operation === 'delete' ? '（删除）' : c.newValue || '（空）'}
-                                  </p>
-                                  <p>
-                                    {c.success === null ? '状态未知' : c.success ? '成功' : '失败'}{' '}
-                                    ·{' '}
-                                    {c.saved === null
-                                      ? '保存状态未知'
-                                      : c.saved
-                                        ? '已写入文件'
-                                        : '未保存文件'}{' '}
-                                    · {c.message}
-                                  </p>
-                                </div>
-                              ))}
-                            </details>
-                          )}
-                        </div>
-                        <time>{new Date(l.time).toLocaleString('zh-CN', { hour12: false })}</time>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
           </main>
         )}
         <footer className="app-status">
           <span>
-            <span className={session ? 'online-dot' : 'offline-dot'} />
-            {busy ||
-              (session ? `${cap?.displayName ?? session.label} · 文档属性` : '就绪 · 请选择连接')}
-          </span>
-          <span>
             {snap
               ? draftConflicts
                 ? `${draftConflicts} 项草稿冲突，暂不能提交`
-                : `${new Set(changes.map((c) => c.modelId)).size} 个文件 · ${changes.length} 项变更 · ${editing && draftSignature(draft) !== savedSignature ? '编辑未保存' : draftSaved ? '已保存待提交' : '无待提交变更'}`
+                : `${changes.length} 项变更 · ${editing && draftSignature(draft) !== savedSignature ? '编辑未保存' : draftSaved ? '已保存待提交' : '无待提交变更'}`
               : ''}
           </span>
         </footer>
@@ -630,6 +533,52 @@ export default function App() {
         <div className="busy-indicator" role="status">
           <Loader2 size={17} className="spin" />
           {busy}…
+        </div>
+      )}
+      {assemblyOpen && snap && (
+        <div className="modal-backdrop assembly-backdrop">
+          <section
+            className="modal assembly-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="装配结构（只读）"
+          >
+            <div className="modal-header">
+              <h2>装配结构</h2>
+              <IconButton
+                title="关闭装配结构"
+                onClick={() => {
+                  setAssemblyOpen(false)
+                  setAssemblyQuery('')
+                }}
+              >
+                <X size={18} />
+              </IconButton>
+            </div>
+            <label className="search-field assembly-search">
+              <input
+                aria-label="搜索装配结构"
+                placeholder="搜索实例名称"
+                value={assemblyQuery}
+                onChange={(e) => setAssemblyQuery(e.target.value)}
+              />
+            </label>
+            <div className="assembly-toolbar">
+              <button
+                className="button"
+                onClick={() => setAssemblyLevel(assemblyLevel === Infinity ? 0 : Infinity)}
+              >
+                {assemblyLevel === Infinity ? '收起全部' : '展开全部'}
+              </button>
+            </div>
+            <div className="assembly-scroll">
+              <AssemblyTree
+                root={snap.root}
+                query={assemblyQuery.trim()}
+                expandLevel={assemblyLevel}
+              />
+            </div>
+          </section>
         </div>
       )}
       {confirmation && (

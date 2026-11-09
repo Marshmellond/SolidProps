@@ -1,11 +1,10 @@
 import { Activity, ArrowRight, Monitor, RefreshCw, Unplug } from 'lucide-react'
-import type { Capabilities, Diagnostic, Session } from '../types'
+import type { Diagnostic, Session } from '../types'
 
 export interface ConnectionPageProps {
   sessions: Session[]
   diagnostics: Diagnostic[]
   session: Session | null
-  capabilities: Capabilities | null
   busy: boolean
   onDiscover: () => void
   onConnect: (session: Session) => void
@@ -17,7 +16,6 @@ export function ConnectionPage({
   sessions,
   diagnostics,
   session,
-  capabilities,
   busy,
   onDiscover,
   onConnect,
@@ -31,7 +29,7 @@ export function ConnectionPage({
         </h2>
         <button className="button" disabled={busy} onClick={onDiscover}>
           <RefreshCw size={15} />
-          重新发现
+          刷新连接池
         </button>
       </div>
       <div className="connection-grid">
@@ -42,24 +40,32 @@ export function ConnectionPage({
                 <Monitor size={28} />
               </div>
               <span className={`tag ${s.connectable ? 'synced-tag' : 'modified-tag'}`}>
-                {s.connectable ? '可连接' : '不可连接'}
+                {session?.id === s.id ? '已连接' : s.connectable ? '可连接' : '不可连接'}
               </span>
             </div>
             <h2>{s.label}</h2>
-            <div className="session-version">
-              {s.version}
-              {s.pid ? ` · PID ${s.pid}` : ''}
-            </div>
-            <p>{s.detail}</p>
-            <button
-              className="button primary"
-              data-testid="connect-button"
-              disabled={!s.connectable || busy}
-              onClick={() => onConnect(s)}
-            >
-              {session?.id === s.id ? '重新连接并读取' : '连接并读取模型'}
-              <ArrowRight size={15} />
-            </button>
+            {!s.connectable && <p>{s.detail}</p>}
+            {session?.id === s.id ? (
+              <button
+                className="button primary"
+                data-testid="disconnect-button"
+                disabled={busy}
+                onClick={onDisconnect}
+              >
+                断开连接
+                <ArrowRight size={15} />
+              </button>
+            ) : (
+              <button
+                className="button primary"
+                data-testid="connect-button"
+                disabled={!s.connectable || busy}
+                onClick={() => onConnect(s)}
+              >
+                连接并读取模型
+                <ArrowRight size={15} />
+              </button>
+            )}
           </article>
         ))}
       </div>
@@ -69,7 +75,6 @@ export function ConnectionPage({
             <Unplug size={34} />
           </div>
           <h2>尚未发现可连接会话</h2>
-          <p>请启动受支持的 CAD 并打开模型，再点击重新发现。</p>
         </div>
       )}
       {diagnostics.some((d) => d.level !== 'info') && (
@@ -82,7 +87,7 @@ export function ConnectionPage({
             </h3>
             {diagnostics.map((d, i) => (
               <div key={i} className={d.level}>
-                <span className="tag">{d.cadId}</span>
+                <span className="tag">SolidWorks</span>
                 <p>{d.message}</p>
                 <span>
                   {d.level === 'error' ? '错误' : d.level === 'warning' ? '提示' : '信息'}
@@ -91,19 +96,6 @@ export function ConnectionPage({
             ))}
           </section>
         </details>
-      )}
-      {session && (
-        <div className="connected-summary">
-          <div>
-            <span className="online-dot" />
-            <strong>当前连接：{session.label}</strong>
-            {capabilities && !capabilities.writable && <p>当前连接仅支持查看属性</p>}
-          </div>
-          <button className="button" disabled={busy} onClick={onDisconnect}>
-            <Unplug size={15} />
-            断开连接
-          </button>
-        </div>
       )}
     </>
   )

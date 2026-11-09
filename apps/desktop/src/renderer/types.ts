@@ -17,8 +17,6 @@ export interface Capabilities {
   cadId: string
   displayName: string
   writable: boolean
-  configurations: boolean
-  designated: boolean
   notes: string
 }
 export interface Property {
@@ -28,7 +26,6 @@ export interface Property {
   writable: boolean
   reason: string
   evaluated: string
-  designated?: boolean
 }
 export interface Model {
   id: string
@@ -81,24 +78,5 @@ export interface ApplyResult {
 export interface Bridge {
   request(method: string, params?: unknown): Promise<unknown>
   local(method: string, params?: unknown): Promise<unknown>
-  chooseExport?: (...args: unknown[]) => Promise<unknown>
 }
-export type Page = 'workspace' | 'history' | 'connections'
-export interface Operation {
-  id: string
-  time: string
-  title: string
-  detail: string
-  status: 'success' | 'warning' | 'error'
-  changes?: {
-    modelPath: string
-    modelName: string
-    propertyName: string
-    operation: string
-    oldValue: string
-    newValue: string
-    success: boolean | null
-    saved: boolean | null
-    message: string
-  }[]
-}
+export type Page = 'workspace' | 'connections'

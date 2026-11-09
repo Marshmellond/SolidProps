@@ -1,21 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Search, Trash2, X, RefreshCw, Undo2 } from 'lucide-react'
+import { LockKeyhole, Plus, Search, Trash2, Undo2, X, RotateCcw, Redo2, Check, Boxes } from 'lucide-react'
 import type { Capabilities, Change, Snapshot } from '../types'
-import { aggregatePropertyRows, stageProperty } from '../property-editor'
+import { propertyRows, renameProperty, stageProperty } from '../property-editor'
 import { FileSidebar } from './FileSidebar'
 
 type Draft = Record<string, Change>
 interface Props {
   snapshot: Snapshot
-  selected: ReadonlySet<string>
-  onSelectionChange: (ids: Set<string>) => void
+  selected: string | null
+  onSelectionChange: (id: string | null) => void
   draft: Draft
   onDraftChange: (draft: Draft) => void
   capabilities: Capabilities | null
   editing: boolean
   busy: boolean
   needsRefresh: boolean
-  onRefresh: () => void
+  canUndo: boolean
+  canRedo: boolean
+  onUndo: () => void
+  onRedo: () => void
+  onUndoAll: () => void
+  onEdit: () => void
+  onShowAssembly?: () => void
 }
 export function PropertyWorkbench(props: Props) {
   const {
@@ -28,63 +34,164 @@ export function PropertyWorkbench(props: Props) {
     busy,
     needsRefresh,
     capabilities,
+    canUndo,
+    canRedo,
   } = props
-  const models = useMemo(
-    () => snapshot.models.filter((m) => selected.has(m.id)),
+  const model = useMemo(
+    () => snapshot.models.find((item) => item.id === selected) ?? null,
     [snapshot.models, selected],
   )
-  const rows = useMemo(() => aggregatePropertyRows(models, draft), [snapshot, selected, draft])
+  const rows = useMemo(() => propertyRows(model, draft), [model, draft])
   const [query, setQuery] = useState('')
-  const [valueTouched, setValueTouched] = useState(false)
   const [checked, setChecked] = useState<Set<string>>(new Set())
-  const [commonOnly, setCommonOnly] = useState(false)
   const [message, setMessage] = useState('')
-  const [adding, setAdding] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newValue, setNewValue] = useState('')
-  const [action, setAction] = useState<{
-    operation: 'update' | 'delete'
-    names: string[]
-    value: string
-    fillMissing: boolean
-  } | null>(null)
+  const [newRows, setNewRows] = useState<{ id: number; name: string; value: string }[]>([])
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
+  const newRowId = useRef(0)
+  const [deleting, setDeleting] = useState<{ names: string[] } | null>(null)
+  const [notice, setNotice] = useState<{ title: string; detail: string } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; name: string | null } | null>(null)
-  const selectionKey = [...selected].sort().join('\u0000')
   useEffect(() => {
     setChecked(new Set())
-    setAdding(false)
-    setAction(null)
+    setNewRows([])
+    setRowErrors({})
+    setDeleting(null)
+    setNotice(null)
     setMenu(null)
     setMessage('')
-  }, [selectionKey, snapshot.id, editing])
+  }, [selected, snapshot.id, editing])
   const locked = !editing || busy || needsRefresh || !capabilities?.writable
-  const canOperate = !locked && models.some((m) => m.writable && !m.dirty)
+  const canOperate = !locked && !!model && model.writable && !model.dirty
   const visibleRows = rows.filter(
     (row) =>
-      (!commonOnly || row.present === models.length) &&
-      (!query ||
-        `${row.name} ${models.map((m) => draft[`${m.id}\u0000${row.name}`]?.newValue ?? m.properties.find((p) => p.name === row.name)?.value ?? '').join(' ')}`
-          .toLowerCase()
-          .includes(query.toLowerCase())),
+      !query ||
+      `${row.name} ${row.value}`.toLowerCase().includes(query.toLowerCase()),
   )
-  const dirtyIds = new Set(Object.values(draft).map((c) => c.modelId))
-  function stage(
-    operation: 'add' | 'update' | 'delete',
-    names: string[],
-    value = '',
-    fillMissing = false,
-  ) {
-    if (!canOperate) return
+  const dirtyIds = new Set(Object.values(draft).map((change) => change.modelId))
+  const hasDraft = Object.keys(draft).length > 0
+  function stage(operation: 'add' | 'update' | 'delete', names: string[], value = '') {
+    if (!canOperate) return 0
     let next = draft
     let affected = 0
-    let skipped = 0
     const reasons: string[] = []
     try {
       for (const name of names) {
         const result = stageProperty(
-          models,
+          model,
           next,
-          { operation, name, value, fillMissing },
+          { operation, name, value },
+          capabilities,
+          locked,
+        )
+        next = result.draft
+        affected += result.affected
+        reasons.push(...result.reasons)
+      }
+      onDraftChange(next)
+      if (operation !== 'update') {
+        const details = [...new Set(reasons)].slice(0, 3)
+        setMessage(
+          affected
+            ? `已暂存 ${affected} 项${details.length ? `；${details.join('；')}` : ''}`
+            : details.join('；') || '未暂存任何项。',
+        )
+      }
+      setDeleting(null)
+      return affected
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+      return 0
+    }
+  }
+  function updateNewRow(id: number, patch: Partial<{ name: string; value: string }>) {
+    setNewRows((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+    if (patch.name !== undefined)
+      setRowErrors((errors) => {
+        if (!(id in errors)) return errors
+        const next = { ...errors }
+        delete next[id]
+        return next
+      })
+  }
+  function commitNewRow(id: number) {
+    if (!model || !canOperate) return
+    const row = newRows.find((item) => item.id === id)
+    if (!row) return
+    const name = row.name.trim()
+    if (!name) {
+      setRowErrors((errors) => ({ ...errors, [id]: '请先填写属性名称。' }))
+      return
+    }
+    const result = stageProperty(model, draft, { operation: 'add', name, value: row.value }, capabilities, locked)
+    if (result.affected > 0) {
+      onDraftChange(result.draft)
+      setMessage('已暂存 1 项')
+      setNewRows((items) => items.filter((item) => item.id !== id))
+      setRowErrors((errors) => {
+        const next = { ...errors }
+        delete next[id]
+        return next
+      })
+      return
+    }
+    const reason = result.reasons[0]?.replace(/^.*?：/, '') || '新增未生效。'
+    setRowErrors((errors) => ({ ...errors, [id]: reason }))
+    setMessage(reason)
+    setNotice(
+      reason.includes('已存在')
+        ? { title: '属性名已存在', detail: '' }
+        : { title: '无法新增', detail: reason },
+    )
+  }
+  function cancelNewRow(id: number) {
+    setNewRows((items) => items.filter((item) => item.id !== id))
+    setRowErrors((errors) => {
+      const next = { ...errors }
+      delete next[id]
+      return next
+    })
+  }
+  function rename(rowName: string, nextName: string) {
+    if (!canOperate || nextName === rowName) return false
+    const row = rows.find((item) => item.name === rowName)
+    const result = renameProperty(
+      model,
+      draft,
+      rowName,
+      nextName,
+      row?.value ?? '',
+      capabilities,
+      locked,
+    )
+    if (result.affected) {
+      onDraftChange(result.draft)
+      setMessage(
+        `已暂存 ${result.affected} 项${result.reasons.length ? `；${result.reasons.slice(0, 3).join('；')}` : ''}`,
+      )
+      return true
+    }
+    setMessage(result.reasons[0] || '改名未生效。')
+    return false
+  }
+  function undo(name: string) {
+    if (locked) return
+    const next = { ...draft }
+    delete next[`${model!.id}\u0000${name}`]
+    onDraftChange(next)
+    setMessage('已撤销此属性的本地修改。')
+  }
+  const deletePreview = (() => {
+    if (!deleting) return null
+    try {
+      let next = draft
+      let affected = 0
+      let skipped = 0
+      const reasons: string[] = []
+      for (const name of deleting.names) {
+        const result = stageProperty(
+          model,
+          next,
+          { operation: 'delete', name, value: '' },
           capabilities,
           locked,
         )
@@ -93,65 +200,7 @@ export function PropertyWorkbench(props: Props) {
         skipped += result.skipped
         reasons.push(...result.reasons)
       }
-      onDraftChange(next)
-      if (models.length > 1 || operation !== 'update')
-        setMessage(
-          `已暂存 ${affected} 项，跳过 ${skipped} 项${reasons.length ? `；${[...new Set(reasons)].slice(0, 3).join('；')}${reasons.length > 3 ? '；详细原因请在操作预览中核对' : ''}` : ''}`,
-        )
-      setAction(null)
-      setAdding(false)
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    }
-  }
-  function openUpdate(name?: string) {
-    const target = name ?? [...checked][0] ?? rows[0]?.name
-    if (!target || !canOperate) return
-    const row = rows.find((r) => r.name === target)
-    setValueTouched(false)
-    setAction({
-      operation: 'update',
-      names: [target],
-      value: row?.mixed ? '' : (row?.value ?? ''),
-      fillMissing: false,
-    })
-  }
-  function undo(name: string) {
-    if (locked) return
-    const next = { ...draft }
-    for (const model of models) delete next[`${model.id}\u0000${name}`]
-    onDraftChange(next)
-    setMessage('已撤销所选文件中此属性的本地修改。')
-  }
-  const preview = (() => {
-    if (!action) return null
-    try {
-      let next = draft
-      let affected = 0
-      let skipped = 0
-      const reasons: string[] = []
-      for (const name of action.names) {
-        const result = stageProperty(models, next, { ...action, name }, capabilities, locked)
-        next = result.draft
-        affected += result.affected
-        skipped += result.skipped
-        reasons.push(...result.reasons)
-      }
       return { affected, skipped, reasons: [...new Set(reasons)] }
-    } catch {
-      return null
-    }
-  })()
-  const addPreview = (() => {
-    if (!adding || !newName.trim()) return null
-    try {
-      return stageProperty(
-        models,
-        draft,
-        { operation: 'add', name: newName, value: newValue },
-        capabilities,
-        locked,
-      )
     } catch {
       return null
     }
@@ -168,49 +217,39 @@ export function PropertyWorkbench(props: Props) {
       <section className="property-panel">
         <div className="property-panel-heading">
           <div>
-            <h2 title={models.length === 1 ? models[0].path : undefined}>
-              {models.length === 1
-                ? models[0].name
-                : models.length
-                  ? `已选 ${models.length} 个文件`
-                  : '文档属性'}
-            </h2>
-
-            {models.length > 1 && (
-              <details>
-                <summary>查看选中文件</summary>
-                {models.map((m) => (
-                  <p key={m.id} title={m.path}>
-                    {m.name} · {m.path}
-                  </p>
-                ))}
-              </details>
-            )}
+            <h2 title={model?.path}>{model ? model.name : '文档属性'}</h2>
           </div>
-          <button className="button" disabled={busy} onClick={props.onRefresh}>
-            <RefreshCw size={14} />
-            重新读取
-          </button>
+          {props.onShowAssembly && (
+            <button className="topbar-button" disabled={busy} onClick={props.onShowAssembly}>
+              <Boxes size={15} />
+              装配结构
+            </button>
+          )}
         </div>
-        {needsRefresh && (
+        {needsRefresh && !busy && (
           <div className="property-warning" role="alert">
-            读取状态已失效，请先重新读取，暂不能编辑或提交。
+            读取状态已失效，请到连接页重新连接。
           </div>
         )}
-        {models.some((m) => !m.writable || m.dirty) && (
-          <details className="property-warning">
-            <summary>
-              {models.filter((m) => !m.writable || m.dirty).length} 个文件暂不可写，批量操作将跳过
-            </summary>
-            {models
-              .filter((m) => !m.writable || m.dirty)
-              .map((m) => (
-                <p key={m.id}>
-                  {m.name}：
-                  {m.reason || (m.dirty ? 'CAD 中有未保存修改，请自行处理后重新读取' : '只读')}
-                </p>
-              ))}
-          </details>
+        {model && (!model.writable || model.dirty) && (
+          <div className="property-warning">
+            <strong>当前文件不可写</strong>
+            <p>{model.reason || (model.dirty ? 'CAD 中有未保存修改，请自行处理后重新连接' : '只读')}</p>
+          </div>
+        )}
+        {!editing && model && (
+          <div className="readonly-banner" role="status">
+            <LockKeyhole size={16} />
+            <span className="readonly-title">只读查看</span>
+            <button
+              className="button primary"
+              data-testid="edit-properties"
+              disabled={busy || needsRefresh || !capabilities?.writable || !model.writable || model.dirty}
+              onClick={props.onEdit}
+            >
+              编辑
+            </button>
+          </div>
         )}
         <div className="property-toolbar">
           <label className="search-field">
@@ -227,31 +266,12 @@ export function PropertyWorkbench(props: Props) {
               </button>
             )}
           </label>
-          {models.length > 1 && (
-            <label className="common-property-toggle">
-              <input
-                type="checkbox"
-                checked={commonOnly}
-                onChange={(e) => setCommonOnly(e.target.checked)}
-              />
-              仅共同属性
-            </label>
-          )}
-          <button
-            className="button"
-            disabled={!canOperate || !rows.length}
-            onClick={() => openUpdate()}
-          >
-            {models.length > 1 ? '批量编辑' : '修改属性'}
-          </button>
           <button
             className="button"
             disabled={!canOperate}
-            onClick={() => {
-              setAdding(true)
-              setNewName('')
-              setNewValue('')
-            }}
+            onClick={() =>
+              setNewRows((items) => [...items, { id: ++newRowId.current, name: '', value: '' }])
+            }
           >
             <Plus size={14} />
             新增属性
@@ -259,13 +279,42 @@ export function PropertyWorkbench(props: Props) {
           <button
             className="button"
             disabled={!canOperate || !checked.size}
-            onClick={() =>
-              setAction({ operation: 'delete', names: [...checked], value: '', fillMissing: false })
-            }
+            onClick={() => setDeleting({ names: [...checked] })}
           >
             <Trash2 size={14} />
             删除属性{checked.size ? ` (${checked.size})` : ''}
           </button>
+          {editing && (
+            <div className="undo-group">
+              <button
+                className="button"
+                disabled={!canUndo || busy}
+                onClick={props.onUndo}
+                title="撤销上一步编辑"
+              >
+                <Undo2 size={14} />
+                撤销上一步
+              </button>
+              <button
+                className="button"
+                disabled={!canRedo || busy}
+                onClick={props.onRedo}
+                title="重做上一步撤销"
+              >
+                <Redo2 size={14} />
+                重做上一步
+              </button>
+              <button
+                className="button"
+                disabled={!hasDraft || busy}
+                onClick={props.onUndoAll}
+                title="清除所有待提交修改，不会修改 CAD 文件"
+              >
+                <RotateCcw size={14} />
+                撤回全部
+              </button>
+            </div>
+          )}
         </div>
         {message && (
           <div className="property-feedback" role="status">
@@ -288,8 +337,8 @@ export function PropertyWorkbench(props: Props) {
             }
           }}
         >
-          {!models.length ? (
-            <div className="property-empty">从左侧选择文件查看属性。</div>
+          {!model ? (
+            <div className="property-empty">未选择文件</div>
           ) : (
             <table className="vertical-properties">
               <thead>
@@ -314,31 +363,20 @@ export function PropertyWorkbench(props: Props) {
                   </th>
                   <th>属性名称</th>
                   <th>属性值</th>
-                  {models.length > 1 && <th className="coverage-col">存在于</th>}
                   <th className="property-change-col">状态</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.map((row) => {
-                  const pending = models
-                    .map((m) => draft[`${m.id}\u0000${row.name}`])
-                    .filter(Boolean)
-                  const deleted =
-                    pending.length === models.length &&
-                    pending.every((c) => c.operation === 'delete')
+                  const pending = draft[`${model.id}\u0000${row.name}`]
+                  const deleted = pending?.operation === 'delete'
+                  const property = model.properties.find((item) => item.name === row.name)
                   const writable =
-                    canOperate &&
-                    models.some(
-                      (m) =>
-                        m.writable &&
-                        !m.dirty &&
-                        (draft[`${m.id}\u0000${row.name}`]?.operation === 'add' ||
-                          m.properties.some((p) => p.name === row.name && p.writable)),
-                    )
+                    canOperate && (pending?.operation === 'add' || !!property?.writable)
                   return (
                     <tr
                       key={row.name}
-                      className={pending.length ? 'property-row-pending' : ''}
+                      className={pending ? 'property-row-pending' : ''}
                       onContextMenu={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
@@ -364,56 +402,33 @@ export function PropertyWorkbench(props: Props) {
                         />
                       </td>
                       <td className="property-name-cell" title={row.name}>
-                        {row.name}
+                        <SingleName
+                          value={row.name}
+                          disabled={!writable || deleted}
+                          onCommit={(value) => rename(row.name, value)}
+                          resetKey={`${snapshot.id}-${selected ?? ''}-${editing}`}
+                        />
                       </td>
                       <td>
-                        {models.length === 1 ? (
-                          <SingleValue
-                            value={deleted ? '（待删除）' : row.value}
-                            disabled={!writable || deleted}
-                            onCommit={(value) => stage('update', [row.name], value)}
-                            name={row.name}
-                            resetKey={`${snapshot.id}-${selectionKey}-${editing}`}
-                          />
-                        ) : writable && !deleted ? (
-                          <button
-                            className={`aggregate-value ${row.mixed ? 'mixed-value' : ''}`}
-                            onClick={() => openUpdate(row.name)}
-                          >
-                            {row.mixed ? '多个不同值' : row.value || '（空）'}
-                          </button>
-                        ) : (
-                          <span
-                            className={`property-display-value ${row.mixed ? 'mixed-value' : ''}`}
-                          >
-                            {deleted
-                              ? '（待删除）'
-                              : row.mixed
-                                ? '多个不同值'
-                                : row.value || '（空）'}
-                          </span>
-                        )}
+                        <SingleValue
+                          value={deleted ? '（待删除）' : row.value}
+                          disabled={!writable || deleted}
+                          onCommit={(value) => stage('update', [row.name], value)}
+                          name={row.name}
+                          resetKey={`${snapshot.id}-${selected ?? ''}-${editing}`}
+                        />
                       </td>
-                      {models.length > 1 && (
-                        <td className="coverage-col">
-                          {row.present} / {models.length} 个文件
-                        </td>
-                      )}
                       <td className="property-change-col">
-                        {pending.length ? (
+                        {pending ? (
                           <>
                             <span
-                              title={[
-                                ...new Set(
-                                  pending.map((c) =>
-                                    c.operation === 'add'
-                                      ? '新增'
-                                      : c.operation === 'delete'
-                                        ? '删除'
-                                        : '修改',
-                                  ),
-                                ),
-                              ].join('、')}
+                              title={
+                                pending.operation === 'add'
+                                  ? '新增'
+                                  : pending.operation === 'delete'
+                                    ? '删除'
+                                    : '修改'
+                              }
                             >
                               待提交
                             </span>
@@ -431,175 +446,142 @@ export function PropertyWorkbench(props: Props) {
                     </tr>
                   )
                 })}
+                {newRows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className={rowErrors[row.id] ? 'property-row-new has-error' : 'property-row-new'}
+                  >
+                    <td className="property-check" />
+                    <td className="property-name-cell">
+                      <input
+                        className="single-property-name"
+                        aria-label="新增属性名称"
+                        aria-invalid={rowErrors[row.id] ? true : undefined}
+                        placeholder="属性名称"
+                        autoFocus={row.id === newRows[newRows.length - 1].id}
+                        value={row.name}
+                        maxLength={255}
+                        onChange={(e) => updateNewRow(row.id, { name: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitNewRow(row.id)
+                          } else if (e.key === 'Escape') cancelNewRow(row.id)
+                        }}
+                      />
+                      {rowErrors[row.id] && (
+                        <span className="row-error" role="alert">
+                          {rowErrors[row.id]}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        className="single-property-value"
+                        aria-label="新增属性值"
+                        placeholder="属性值"
+                        value={row.value}
+                        onChange={(e) => updateNewRow(row.id, { value: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitNewRow(row.id)
+                          } else if (e.key === 'Escape') cancelNewRow(row.id)
+                        }}
+                      />
+                    </td>
+                    <td className="property-change-col property-row-new-actions">
+                      <button
+                        title={row.name.trim() ? '确认新增' : '填写属性名称后可确认'}
+                        aria-label="确认新增"
+                        disabled={!row.name.trim()}
+                        onClick={() => commitNewRow(row.id)}
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        title="取消新增"
+                        aria-label="取消新增"
+                        onClick={() => cancelNewRow(row.id)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}
-          {models.length > 0 && !visibleRows.length && (
+          {model && !visibleRows.length && !newRows.length && (
             <div className="property-empty">
               {rows.length ? '没有符合查询条件的属性。' : '暂无文档属性'}
             </div>
           )}
-          {adding && (
-            <div className="inline-property-add">
-              <h3>新增到 {models.length} 个选中文件</h3>
-              <label>
-                属性名称
-                <input
-                  aria-label="新增属性名称"
-                  autoFocus
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  maxLength={255}
-                />
-              </label>
-              <label>
-                属性值
-                <input
-                  aria-label="新增属性值"
-                  value={newValue}
-                  onChange={(e) => setNewValue(e.target.value)}
-                />
-              </label>
-              {addPreview && (
-                <p>{`预计新增 ${addPreview.affected} 项，跳过 ${addPreview.skipped} 项。${addPreview.reasons.join('；')}`}</p>
-              )}
-              <div>
-                <button className="button" onClick={() => setAdding(false)}>
-                  取消
-                </button>
-                <button
-                  className="button primary"
-                  disabled={!canOperate || !addPreview?.affected}
-                  onClick={() => stage('add', [newName], newValue)}
-                >
-                  加入编辑
-                </button>
-              </div>
-            </div>
-          )}
         </div>
         <div className="property-panel-footer">
-          <span>
-            {models.length} 个选中文件 · {rows.length} 项属性
-          </span>
-          <span>{editing ? '编辑中' : '只读'} · 文档属性</span>
+          <span>{rows.length} 项属性</span>
+          {editing && <span>编辑中</span>}
         </div>
-        {snapshot.warnings.length > 0 && (
-          <details className="warning-strip">
-            <summary>读取详情</summary>
-            <span>{snapshot.warnings.join(' · ')}</span>
-          </details>
-        )}
       </section>
-      {action && (
+      {notice && (
         <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={action.operation === 'delete' ? '删除属性' : '批量编辑属性'}
-          >
+          <section className="modal" role="dialog" aria-modal="true" aria-label={notice.title}>
             <div className="modal-header">
-              <h2>{action.operation === 'delete' ? '删除属性' : '批量编辑属性'}</h2>
-              <button aria-label="关闭属性操作" onClick={() => setAction(null)}>
+              <h2>{notice.title}</h2>
+              <button aria-label="关闭提示" onClick={() => setNotice(null)}>
                 <X size={18} />
               </button>
             </div>
-            <div className="modal-fields">
-              {action.operation === 'update' ? (
-                <>
-                  <label>
-                    目标属性
-                    <select
-                      value={action.names[0]}
-                      onChange={(e) => {
-                        const row = rows.find((r) => r.name === e.target.value)
-                        setValueTouched(false)
-                        setAction({
-                          ...action,
-                          names: [e.target.value],
-                          value: row?.mixed ? '' : (row?.value ?? ''),
-                          fillMissing: false,
-                        })
-                      }}
-                    >
-                      {rows.map((r) => (
-                        <option key={r.name} value={r.name}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    统一赋值
-                    <input
-                      aria-label="批量属性值"
-                      autoFocus
-                      value={action.value}
-                      onChange={(e) => {
-                        setValueTouched(true)
-                        setAction({ ...action, value: e.target.value })
-                      }}
-                      placeholder="输入新值；要清空请点下方清空按钮"
-                    />
-                  </label>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      setValueTouched(true)
-                      setAction({ ...action, value: '' })
-                    }}
-                  >
-                    明确清空属性值
-                  </button>
-                  <fieldset className="missing-policy">
-                    <legend>缺少属性的文件</legend>
-                    <label>
-                      <input
-                        type="radio"
-                        name="missing-policy"
-                        checked={!action.fillMissing}
-                        onChange={() => setAction({ ...action, fillMissing: false })}
-                      />
-                      仅修改已有属性（默认）
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="missing-policy"
-                        checked={action.fillMissing}
-                        onChange={() => setAction({ ...action, fillMissing: true })}
-                      />
-                      修改已有属性，并为缺少的文件新增
-                    </label>
-                  </fieldset>
-                </>
-              ) : (
-                <p>删除：{action.names.join('、')}</p>
-              )}
-              <div className="operation-preview">
-                预计处理 {preview?.affected ?? 0} 项，跳过 {preview?.skipped ?? 0} 项。
-                <p>{preview?.reasons.join('；')}</p>
+            {notice.detail && (
+              <div className="modal-fields">
+                <p>{notice.detail}</p>
               </div>
+            )}
+            <div className="modal-footer">
+              <button className="button primary" onClick={() => setNotice(null)}>
+                知道了
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {deleting && (
+        <div className="modal-backdrop">
+          <section className="modal danger-modal" role="dialog" aria-modal="true" aria-label="删除属性">
+            <div className="modal-header danger-header">
+              <div className="danger-heading">
+                <span className="danger-icon">
+                  <Trash2 size={18} />
+                </span>
+                <div>
+                  <h2>删除属性</h2>
+                  <p>以下 {deleting.names.length} 项属性将从当前文件移除</p>
+                </div>
+              </div>
+              <button aria-label="关闭属性操作" onClick={() => setDeleting(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="danger-body">
+              <div className="danger-chips">
+                {deleting.names.map((name) => (
+                  <span className="danger-chip" key={name}>
+                    {name}
+                  </span>
+                ))}
+              </div>
+              {deletePreview?.reasons.length ? <p className="danger-note">{deletePreview.reasons.join('；')}</p> : null}
             </div>
             <div className="modal-footer">
-              <button className="button" onClick={() => setAction(null)}>
+              <button className="button" onClick={() => setDeleting(null)}>
                 取消
               </button>
               <button
-                className="button primary"
-                disabled={
-                  !canOperate ||
-                  !preview?.affected ||
-                  (action.operation === 'update' &&
-                    rows.find((r) => r.name === action.names[0])?.mixed &&
-                    !valueTouched)
-                }
-                onClick={() =>
-                  stage(action.operation, action.names, action.value, action.fillMissing)
-                }
+                className="button danger"
+                disabled={!canOperate || !deletePreview?.affected}
+                onClick={() => stage('delete', deleting.names)}
               >
-                加入编辑
+                删除
               </button>
             </div>
           </section>
@@ -620,7 +602,6 @@ export function PropertyWorkbench(props: Props) {
               </button>
               <button
                 role="menuitem"
-                disabled={!!rows.find((r) => r.name === menu.name)?.mixed}
                 onClick={() => {
                   void navigator.clipboard?.writeText(
                     rows.find((r) => r.name === menu.name)?.value ?? '',
@@ -635,30 +616,15 @@ export function PropertyWorkbench(props: Props) {
                 role="menuitem"
                 disabled={!canOperate}
                 onClick={() => {
-                  openUpdate(menu.name!)
+                  setDeleting({ names: [menu.name!] })
                   setMenu(null)
                 }}
               >
-                修改此属性
+                删除此属性
               </button>
               <button
                 role="menuitem"
-                disabled={!canOperate}
-                onClick={() => {
-                  setAction({
-                    operation: 'delete',
-                    names: [menu.name!],
-                    value: '',
-                    fillMissing: false,
-                  })
-                  setMenu(null)
-                }}
-              >
-                {models.length > 1 ? '删除所选文件中的此属性' : '删除此属性'}
-              </button>
-              <button
-                role="menuitem"
-                disabled={locked || !models.some((m) => draft[`${m.id}\u0000${menu.name}`])}
+                disabled={locked || !draft[`${model?.id ?? ''}\u0000${menu.name}`]}
                 onClick={() => {
                   undo(menu.name!)
                   setMenu(null)
@@ -672,9 +638,7 @@ export function PropertyWorkbench(props: Props) {
             role="menuitem"
             disabled={!canOperate}
             onClick={() => {
-              setAdding(true)
-              setNewName('')
-              setNewValue('')
+              setNewRows((items) => [...items, { id: ++newRowId.current, name: '', value: '' }])
               setMenu(null)
             }}
           >
@@ -683,6 +647,45 @@ export function PropertyWorkbench(props: Props) {
         </ContextMenu>
       )}
     </div>
+  )
+}
+function SingleName({
+  value,
+  disabled,
+  onCommit,
+  resetKey,
+}: {
+  value: string
+  disabled: boolean
+  onCommit: (value: string) => boolean
+  resetKey: string
+}) {
+  const [text, setText] = useState(value)
+  useEffect(() => setText(value), [value, resetKey])
+  if (disabled)
+    return (
+      <span className="property-display-name" title={value}>
+        {value}
+      </span>
+    )
+  const commit = () => {
+    const next = text.trim()
+    if (next === value) return setText(value)
+    if (!onCommit(next)) setText(value)
+  }
+  return (
+    <input
+      className="single-property-name"
+      aria-label={`属性名称 ${value}`}
+      value={text}
+      maxLength={255}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+        else if (e.key === 'Escape') setText(value)
+      }}
+    />
   )
 }
 function SingleValue({

@@ -20,8 +20,6 @@ class Capabilities(TypedDict):
     cadId: str
     displayName: str
     writable: bool
-    configurations: bool
-    designated: bool
     notes: str
 
 class Property(TypedDict):
@@ -31,7 +29,6 @@ class Property(TypedDict):
     writable: bool
     reason: str
     evaluated: str
-    designated: NotRequired[bool]
 
 class Model(TypedDict):
     id: str
@@ -83,8 +80,8 @@ class WorkerError(Exception):
         self.code = code
 
 
-def capabilities(cad_id, writable=False, configurations=False, designated=False, notes='', display_name=None):
-    return dict(cadId=cad_id, displayName=display_name or {'solidworks': 'SolidWorks'}.get(cad_id, cad_id), writable=writable, configurations=configurations, designated=designated, notes=notes)
+def capabilities(writable=False, notes=''):
+    return dict(cadId='solidworks', displayName='SolidWorks', writable=writable, notes=notes)
 
 
 def result(change, success=False, message='', saved=False, verified=False):

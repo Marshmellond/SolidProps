@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { join, resolve } from "node:path";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { WorkerClient } from "./worker-client";
 import { StorageClient, LOCAL_METHODS } from "./storage-client";
 
@@ -17,7 +17,7 @@ function createWindow(): void {
     height: 940,
     minWidth: 1060,
     minHeight: 680,
-    title: "CadWeave · 模型属性工作台",
+    title: "SolidProps · SolidWorks 文档属性",
     backgroundColor: "#F4F5F7",
     frame: false,
     icon: join(__dirname, '../../resources/icons/cadweave.ico'),
@@ -172,26 +172,6 @@ app.whenReady().then(() => {
       auditBusy = false;
       cadBusy = false;
     }
-  });
-  ipcMain.handle("file:export", async (event, options: unknown) => {
-    if (event.sender !== window?.webContents || !window)
-      throw new Error("未授权窗口");
-    const value = options as { suggestedName?: unknown; content?: unknown };
-    if (
-      typeof value?.suggestedName !== "string" ||
-      typeof value.content !== "string"
-    )
-      throw new Error("导出参数无效");
-    if (Buffer.byteLength(value.content, "utf8") > 20_000_000) throw new Error("导出内容过大（最多20MB UTF-8）");
-    const safeName = value.suggestedName
-      .replace(/[\\/:*?"<>|]/g, "_")
-      .slice(0, 120);
-    const result = await dialog.showSaveDialog(window, {
-      defaultPath: safeName,
-    });
-    if (result.canceled || !result.filePath) return { cancelled: true };
-    writeFileSync(result.filePath, value.content, "utf8");
-    return { cancelled: false, path: result.filePath };
   });
   ipcMain.on("window:control", (event, action: unknown) => {
     if (event.sender !== window?.webContents || !window) return;

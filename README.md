@@ -1,4 +1,4 @@
-# CadWeave · 模型属性工作台
+# SolidProps · SolidWorks 文档属性
 
 Electron / React / TypeScript 桌面端 + 独立 Python CAD Worker。聚焦装配父子模型属性集中编辑；不直接修改 CAD 私有文件格式。
 
@@ -7,7 +7,7 @@ Electron / React / TypeScript 桌面端 + 独立 Python CAD Worker。聚焦装�
 - 所有开发在本目录进行；客户提供的原始测试模型位于 `测试文件/`，仅保留在本机，不进入 Git 仓库。
 - `测试文件/` 已由 `.gitignore` 排除；请勿用 `git add -f` 强行加入，也不要把客户模型上传到 GitHub。
 - 原始测试模型不纳入 Git、不直接执行写回测试；工作副本放 `.local/`。
-- 当前产品仅连接用户已打开的 SolidWorks，不提供演示模式或其他 CAD 运行时驱动。保留通用 CAD 插件契约供未来扩展；未验证版本、组件和写入能力不宣称支持。
+- 当前产品仅连接用户已打开的 SolidWorks，不提供演示模式或其他 CAD 运行时驱动；未验证版本、组件和写入能力不宣称支持。
 - 不配置远程仓库，不上传模型。
 
 ## 开发
@@ -34,7 +34,7 @@ pwsh -NoProfile -File scripts/verify-public-repo.ps1
 ## 架构
 
 - `apps/desktop`：主进程、安全预加载接口、React 界面。
-- `workers/cad-python`：stdio 服务、领域模型、CAD 插件。
+- `workers/cad-python`：stdio 服务、领域模型、SolidWorks 适配器。
 - `docs/architecture/protocol.md`：版本化通信协议。
 - `docs/compatibility`：真实能力和环境限制。
 - `scripts/verify-public-repo.ps1`：提交前检查客户模型没有进入 Git。
@@ -43,17 +43,16 @@ pwsh -NoProfile -File scripts/verify-public-repo.ps1
 
 ## 当前使用流程
 
-- 简体中文导航：工作台、连接、记录、属性模板、偏好设置。仅附着已有 SolidWorks 真实会话，无会话时显示连接提示，不生成合成数据。
+- 简体中文导航：工作台、连接。仅附着已有 SolidWorks 真实会话，无会话时显示连接提示，不生成合成数据。
 - **保存 ≠ 写回**：“保存”只将本地编辑持久化为 SQLite 草稿；保存后经预览“提交”，才请求真实 CAD 写入和分文档保存。草稿按 CAD、根模型路径和作用域隔离，冲突项保留在数据库但不载入提交。
 - 提交后自动重读，包括请求抛出异常时；重读失败锁定编辑/提交，需先检查 CAD 再重新读取，不能自动重试未知写入。
-- 桌面主进程在 CAD 变更请求前先持久保存 pending 审计；记录可跨界面会话保留，支持时间、模型路径、属性、操作、原值/新值及逐项结果详情、分页和 `.log` 导出。导出请求覆盖全部历史而非当前页；超出安全数量/大小预算会明确标注截断。
+- 桌面主进程在 CAD 变更请求前先持久保存 pending 审计，作为写入安全的一部分；界面不提供记录页或导出。
 - 变更支持可选 `operation: update/add/delete`（省略为 update）；新增仅普通文本，已有属性修改/删除仅未链接普通文本。**新增/删除目前只有 fake COM 逻辑测试，没有真实 CAD 写回及关闭重开认证。**模板仍只更新已有可写字段。
 
 ## 使用和验收
 
 - [用户说明](docs/product/user-guide.md)
 - [测试记录](docs/product/test-report.md)
-- [插件扩展约定](docs/architecture/plugin-development.md)
 - [视觉规范](docs/design/visual-system.md)
 - [SolidWorks Save3 副本实机认证](docs/compatibility/sw-save3-validation.md)
 

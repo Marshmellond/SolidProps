@@ -111,7 +111,7 @@ def test_invalid_json(text):
 def test_new_sessions_are_discovered_on_connect(worker):
     session = dict(id='solidworks:1', cadId='solidworks', connectable=True)
     worker.discover = lambda: dict(sessions=[session], diagnostics=[])
-    worker.factories['solidworks'] = lambda value: type('Adapter', (), {
+    worker.adapter_factory = lambda value: type('Adapter', (), {
         'session': value,
         'capabilities': {},
         'close': lambda self: None,

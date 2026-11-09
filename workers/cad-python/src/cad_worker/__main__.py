@@ -4,7 +4,7 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description='CadWeave JSON stdio worker（不会启动 CAD）')
+    parser = argparse.ArgumentParser(description='SolidProps JSON stdio worker（仅支持 SolidWorks，不会启动 CAD）')
     parser.add_argument('--diagnose', action='store_true', help='输出一次 discover JSON 后退出')
     parser.add_argument('--self-test', action='store_true', help='执行协议和发现器自检，不连接或修改 CAD')
     parser.add_argument('--store', action='store_true', help='执行一次本地 SQLite 请求并退出（不连接 CAD）')
@@ -18,15 +18,13 @@ def main():
         return
     from .service import serve
     from .discovery import discover
-    from .adapters import builtin_plugins
     if args.diagnose:
         print(json.dumps(discover(), ensure_ascii=False))
         return
     if args.self_test:
         report = discover()
         assert isinstance(report.get('sessions'), list)
-        enabled = {p.cad_id for p in builtin_plugins()}
-        assert all(session.get('cadId') in enabled for session in report['sessions'])
+        assert all(session.get('cadId') == 'solidworks' for session in report['sessions'])
         print(json.dumps(dict(ok=True, discovered=len(report['sessions']), realCadTouched=False), ensure_ascii=False))
         return
     try:
